@@ -1,10 +1,13 @@
 use crate::restapi::WorkflowStatus::InProgress;
-use crate::slurm;
-use actix_web::{web, App, HttpServer, Responder};
+use crate::slurm::BatchScript;
+use crate::{slurm, Config};
+use actix_web::web::{Data, Json};
+use actix_web::{App, HttpServer, Responder};
 use serde::Deserialize;
 use shell_escape::unix::escape;
 use std::borrow::Cow;
 use std::io;
+use std::sync::Arc;
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -31,42 +34,21 @@ struct WebhookPayload {
     workflow_job: WorkflowJob,
 }
 
-fn make_runner_script(job: &WorkflowJob) -> String {
-    let partition = "nv";
-    let runner_url = "url";
-    let runner_token = "token";
-    let runner_seq = 12345;
-    let runner_labels = job.labels.join(",");
-    format!(
-        r#"!#/bin/bash
-#SBATCH -p {part}
-
-source actions-runner-env
-actions-runner/config.sh \
-    --unattend \
-    --url {url} \
-    --token {token} \
-    --name auto-{seq} \
-    --labels {labels} \
-    --ephemeral
-actions-runner/run.sh
-"#,
-        part = escape(Cow::Borrowed(partition)),
-        url = runner_url,
-        token = runner_token,
-        seq = runner_seq,
-        labels = runner_labels,
-    )
-}
-
 #[actix_web::post("/workflow_job")]
-async fn workflow_job(req: web::Json<WebhookPayload>) -> impl Responder {
-    format!("{:?}", req)
+async fn workflow_job(data: Data<Arc<Config>>, req: Json<WebhookPayload>) -> impl Responder {
+    BatchScript {
+        slurm: &data.slurm,
+        runner: &data.action_runner,
+        mapping: &data.mappings[0],
+        runner_seq: 1234,
+    }
+        .to_string()
 }
 
 #[actix_web::main]
-pub async fn main() -> io::Result<()> {
-    HttpServer::new(|| App::new().service(workflow_job))
+pub async fn main(cfg: Config) -> io::Result<()> {
+    let rc_cfg = Arc::new(cfg);
+    HttpServer::new(move || App::new().app_data(Data::new(rc_cfg.clone())).service(workflow_job))
         .bind("127.0.0.1:6020")?
         .run()
         .await

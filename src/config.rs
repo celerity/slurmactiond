@@ -2,41 +2,36 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct SlurmConfig {
-    sbatch: Option<String>,
-    #[serde(default)] sbatch_args: Vec<String>,
+    pub sbatch: Option<String>,
+    #[serde(default)] pub sbatch_args: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct MapConfig {
-    runner_labels: Vec<String>,
-    sbatch_args: Vec<String>,
+    pub runner_labels: Vec<String>,
+    pub sbatch_args: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ActionRunnerConfig {
-    installation_path: String,
-    name_prefix: String,
-    base_labels: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct GithubConfig {
-    repository_url: String,
-    runner_registration_token: String,
+    pub installation_path: String,
+    pub name_prefix: String,
+    pub base_labels: Vec<String>,
+    pub repository_url: String,
+    pub registration_token: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct HttpConfig {
-    listen: String,
+    pub listen: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    slurm: SlurmConfig,
-    action_runner: ActionRunnerConfig,
-    #[serde(default)] mappings: Vec<MapConfig>,
-    github: GithubConfig,
-    http: HttpConfig,
+    pub slurm: SlurmConfig,
+    pub action_runner: ActionRunnerConfig,
+    #[serde(default)] pub mappings: Vec<MapConfig>,
+    pub http: HttpConfig,
 }
 
 #[test]

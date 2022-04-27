@@ -6,6 +6,8 @@
 installation_path = "/home/cirunner/action-runner"
 name_prefix = "slurmactiond"
 base_labels = ["slurm"]
+repository_url = "https://github.com/celerity/slurmactiond"
+registration_token = "A1b2C3d4E5f6"
 
 [[mappings]]
 runner_labels = ["nvidia"]
@@ -14,10 +16,6 @@ sbatch_args = ["-p", "nv"]
 [[mappings]]
 runner_labels = ["intel"]
 sbatch_args = ["-p", "intel"]
-
-[github]
-repository_url = "https://github.com/celerity/slurmactiond"
-runner_registration_token = "A1b2C3d4E5f6"
 
 [http]
 listen = "127.0.0.1:6020"

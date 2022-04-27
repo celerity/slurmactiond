@@ -5,6 +5,6 @@ mod config;
 use config::Config;
 
 fn main() -> std::io::Result<()> {
-    let cfg: Config = toml::from_slice(&std::fs::read("config.toml")?)?;
-    restapi::main()
+    let cfg = toml::from_slice(&std::fs::read("config.example.toml")?)?;
+    restapi::main(cfg)
 }
