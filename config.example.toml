@@ -1,0 +1,23 @@
+[slurm]
+#sbatch = "/usr/bin/sbatch"
+#sbatch_args = ["-A", "account"]
+
+[action_runner]
+installation_path = "/home/cirunner/action-runner"
+name_prefix = "slurmactiond"
+base_labels = ["slurm"]
+
+[[mappings]]
+runner_labels = ["nvidia"]
+sbatch_args = ["-p", "nv"]
+
+[[mappings]]
+runner_labels = ["intel"]
+sbatch_args = ["-p", "intel"]
+
+[github]
+repository_url = "https://github.com/celerity/slurmactiond"
+runner_registration_token = "A1b2C3d4E5f6"
+
+[http]
+listen = "127.0.0.1:6020"

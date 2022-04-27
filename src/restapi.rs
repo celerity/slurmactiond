@@ -2,6 +2,8 @@ use crate::restapi::WorkflowStatus::InProgress;
 use crate::slurm;
 use actix_web::{web, App, HttpServer, Responder};
 use serde::Deserialize;
+use shell_escape::unix::escape;
+use std::borrow::Cow;
 use std::io;
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
@@ -37,18 +39,23 @@ fn make_runner_script(job: &WorkflowJob) -> String {
     let runner_labels = job.labels.join(",");
     format!(
         r#"!#/bin/bash
-#SBATCH -p {partition}
+#SBATCH -p {part}
 
 source actions-runner-env
 actions-runner/config.sh \
     --unattend \
-    --url {runner_url} \
-    --token {runner_token} \
-    --name auto-{runner_seq} \
-    --labels {runner_labels} \
+    --url {url} \
+    --token {token} \
+    --name auto-{seq} \
+    --labels {labels} \
     --ephemeral
 actions-runner/run.sh
-"#
+"#,
+        part = escape(Cow::Borrowed(partition)),
+        url = runner_url,
+        token = runner_token,
+        seq = runner_seq,
+        labels = runner_labels,
     )
 }
 
