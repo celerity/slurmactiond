@@ -1,82 +1,83 @@
-use crate::config::{ActionRunnerConfig, MapConfig, SlurmConfig};
-use crate::Config;
 use std::borrow::Cow;
 use std::fmt;
-use std::fmt::{Display, Formatter, Write as _};
-use std::io::{self, Read, Write as _};
-use std::iter::Map;
+use std::fmt::{Display, Formatter};
+use std::io;
 use std::process::{Command, Stdio};
 use std::str::from_utf8;
 
-#[derive(Debug, Hash, PartialEq, Eq)]
-pub struct JobId(pub u32);
+use crate::config::{Config, PartitionId};
 
-fn into_io_result<T, E: Display>(r: Result<T, E>) -> io::Result<T> {
-    r.map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e}")))
+#[derive(Debug, Hash, PartialEq, Eq)]
+pub struct JobId(pub u64);
+
+fn into_io_result<T, E: Display>(r: Result<T, E>, cause: &str) -> io::Result<T> {
+    r.map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{cause}: {e}")))
 }
 
 fn sh_escape<'s>(s: impl Into<Cow<'s, str>>) -> Cow<'s, str> {
     shell_escape::unix::escape(s.into())
 }
 
-pub struct BatchScript<'cfg> {
-    pub slurm: &'cfg SlurmConfig,
-    pub runner: &'cfg ActionRunnerConfig,
-    pub mapping: &'cfg MapConfig,
-    pub runner_seq: u64,
-    pub concurrent_id: u64,
+struct BatchScript<'c> {
+    config: &'c Config,
+    partition: &'c PartitionId,
+}
+
+fn write_batch_opts<S: Display>(f: &mut Formatter<'_>, opts: &[S]) -> fmt::Result {
+    if !opts.is_empty() {
+        write!(f, "\n#SBATCH")?;
+        for o in opts {
+            write!(f, " {}", o)?;
+        }
+    }
+    Ok(())
 }
 
 impl Display for BatchScript<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "#!/bin/bash")?;
-        for opt_group in [&self.slurm.sbatch_args, &self.mapping.sbatch_args] {
-            if !opt_group.is_empty() {
-                let escaped_opts: Vec<_> = opt_group.iter().map(sh_escape).collect();
-                write!(f, "\n#SBATCH {}", escaped_opts.join(" "))?;
-            }
-        }
+        let config = self.config;
+        let partition = &config.partitions[self.partition];
 
-        let base_labels = self.runner.base_labels.iter().map(AsRef::as_ref);
-        let mapping_labels = self.mapping.runner_labels.iter().map(AsRef::as_ref);
-        let all_labels: Vec<&str> = base_labels.chain(mapping_labels).collect();
+        write!(f, "#!/bin/bash")?;
+        write_batch_opts(f, &config.slurm.sbatch_options)?;
+        write_batch_opts(f, &partition.sbatch_options)?;
+
+        let base_labels = config.runner.registration.labels.iter().map(AsRef::as_ref);
+        let partition_labels = partition.runner_labels.iter().map(AsRef::as_ref);
+        let all_labels: Vec<&str> = base_labels.chain(partition_labels).collect();
         assert!(!all_labels.iter().any(|l| l.contains(',')));
 
         write!(
             f,
             r#"
-#SBATCH -J {name}
+#SBATCH -J {job_name}-{part_name}
+#SBATCH --parsable
 
 set -e -o pipefail -o noclobber
-CONCURRENT_DIR="$HOME/slurmactiond/concurrent/{concurrent_id}"
-if ! [ -d "$CONCURRENT_DIR" ]; then
-    mkdir -p "$CONCURRENT_DIR"
-    cd "$CONCURRENT_DIR"
-    tar xf {tarball}
-fi
-cd "$CONCURRENT_DIR"
+
+mkdir -p {work_dir}
+JOB_DIR={work_dir}/$SLURM_JOB_ID
+mkdir "$JOB_DIR"
+cleanup() {{ cd; rm -rf "$JOB_DIR"; }}
+trap cleanup EXIT
+
+cd "$JOB_DIR"
+tar xf {tarball}
 ./config.sh \
     --unattend \
     --url {url} \
     --token {token} \
-    --name {name} \
+    --name {runner_name}-{part_name}-"$SLURM_JOB_ID" \
     --labels {labels} \"#,
-            tarball = sh_escape(&self.runner.tarball),
-            url = sh_escape(&self.runner.repository_url),
-            token = sh_escape(&self.runner.registration_token),
-            name = sh_escape(format!("{}-{}", &self.runner.name_prefix, &self.runner_seq)),
+            job_name = sh_escape(&config.slurm.job_name),
+            work_dir = sh_escape(&config.runner.work_dir),
+            tarball = sh_escape(&config.runner.tarball),
+            url = sh_escape(&config.runner.registration.url),
+            token = sh_escape(&config.runner.registration.token),
+            runner_name = sh_escape(&config.runner.registration.name),
+            part_name = sh_escape(&self.partition.0),
             labels = sh_escape(all_labels.join(",")),
-            concurrent_id = self.concurrent_id,
         )?;
-
-        if let Some(group) = &self.runner.group {
-            write!(
-                f,
-                r#"
-    --runner-group {} \"#,
-                sh_escape(group)
-            )?;
-        }
 
         write!(
             f,
@@ -88,24 +89,32 @@ cd "$CONCURRENT_DIR"
     }
 }
 
-pub fn batch_submit(script: BatchScript) -> io::Result<JobId> {
-    let child = Command::new("sbatch")
-        .args(&["--parsable"])
+pub fn batch_submit(config: &Config, partition: &PartitionId) -> io::Result<JobId> {
+    use std::io::Write;
+
+    let sbatch = config.slurm.sbatch.as_deref().unwrap_or("sbatch");
+    let child = Command::new(sbatch)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    child
-        .stdin
-        .as_ref()
-        .unwrap()
-        .write_all(script.to_string().as_bytes())?;
+    let script = BatchScript { config, partition }.to_string();
+    child.stdin.as_ref().unwrap().write_all(script.as_bytes())?;
     let output = child.wait_with_output()?;
     if output.status.success() {
-        let stdout = into_io_result(from_utf8(&output.stdout))?;
-        let job_id = into_io_result(stdout.parse())?;
+        let stdout = into_io_result(from_utf8(&output.stdout), "cannot decode sbatch output")?;
+        let job_id = into_io_result(
+            stdout.trim().parse(),
+            "cannot interpret sbatch output as job id",
+        )?;
         return Ok(JobId(job_id));
     }
-    let stderr = into_io_result(from_utf8(&output.stderr))?;
-    into_io_result(Err(stderr))
+    let stderr = into_io_result(
+        from_utf8(&output.stderr),
+        "cannot decode sbatch error message",
+    )?;
+    into_io_result(
+        Err(stderr),
+        &format!("sbatch returned exit code {}", output.status.code().unwrap()),
+    )
 }

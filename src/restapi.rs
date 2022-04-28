@@ -1,13 +1,14 @@
-use crate::restapi::WorkflowStatus::InProgress;
-use crate::slurm::BatchScript;
-use crate::{slurm, Config};
-use actix_web::web::{Data, Json};
-use actix_web::{App, HttpServer, Responder};
-use serde::Deserialize;
-use shell_escape::unix::escape;
-use std::borrow::Cow;
 use std::io;
-use std::sync::Arc;
+
+use actix_web::{App, HttpServer, Responder};
+use actix_web::http::StatusCode;
+use actix_web::web::{Data, Json};
+use log::{debug, info};
+use serde::Deserialize;
+
+use crate::Config;
+use crate::config::PartitionId;
+use crate::slurm::batch_submit;
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -34,16 +35,30 @@ struct WebhookPayload {
     workflow_job: WorkflowJob,
 }
 
-#[actix_web::post("/workflow_job")]
-async fn workflow_job(data: Data<Config>, req: Json<WebhookPayload>) -> impl Responder {
-    BatchScript {
-        slurm: &data.slurm,
-        runner: &data.action_runner,
-        mapping: &data.mappings[0],
-        runner_seq: 1234,
-        concurrent_id: 0,
+fn match_partition<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c PartitionId> {
+    let unmatched_labels: Vec<_> = (job.labels.iter())
+        .filter(|l| !config.runner.registration.labels.contains(l))
+        .collect();
+    let closest_matching_partition = (config.partitions.iter())
+        .filter(|(_, p)| unmatched_labels.iter().all(|l| p.runner_labels.contains(l)))
+        .min_by_key(|(_, p)| p.runner_labels.len()); // min: closest match
+    if let Some((id, _)) = closest_matching_partition {
+        debug!("matched runner labels {:?} to partition {}", job.labels, id.0);
+        Some(id)
+    } else {
+        debug!("runner labels {:?} do not match any partition", job.labels);
+        None
     }
-        .to_string()
+}
+
+#[actix_web::post("/workflow_job")]
+async fn workflow_job(data: Data<Config>, payload: Json<WebhookPayload>) -> impl Responder {
+    if let Some(part_id) = match_partition(&data, &payload.workflow_job) {
+        let job_id = batch_submit(&data, &part_id)?;
+        info!("submitted SLURM job {} for runner job {} of workflow {}", job_id.0,
+            payload.workflow_job.job_id, payload.workflow_job.workflow_id);
+    }
+    Result::<_, io::Error>::Ok(("", StatusCode::NO_CONTENT))
 }
 
 #[actix_web::main]
@@ -58,6 +73,8 @@ pub async fn main(cfg: Config) -> io::Result<()> {
 
 #[test]
 fn test_deserialize_payload() {
+    use crate::restapi::WorkflowStatus::InProgress;
+
     let json = include_str!("../testdata/workflow_job.json");
     let payload: WebhookPayload = serde_json::from_str(json).unwrap();
     assert_eq!(

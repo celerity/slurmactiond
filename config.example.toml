@@ -1,22 +1,25 @@
+[http]
+bind = "127.0.0.1:6020"
+
 [slurm]
 #sbatch = "/usr/bin/sbatch"
-#sbatch_args = ["-A", "account"]
+sbatch_options = ["-t", "1:00:00"]
+job_name = "action-runner"
 
 [action_runner]
 tarball = "/home/cirunner/actions-runner-linux-x64-2.290.1.tar.gz"
-#group = "slurm"
-name_prefix = "slurmactiond"
-base_labels = ["slurm"]
-repository_url = "https://github.com/celerity/slurmactiond"
-registration_token = "A1b2C3d4E5f6"
+work_dir = "/home/cirunner/slurmactiond"
 
-[[mappings]]
-runner_labels = ["nvidia"]
-sbatch_args = ["-p", "nv"]
+[action_runner.registration]
+url = "https://github.com/celerity"
+token = "A1b2C3d4E5f6"
+name = "slurm"
+labels = ["slurm", "dc-03"]
 
-[[mappings]]
-runner_labels = ["intel"]
-sbatch_args = ["-p", "intel"]
+[partitions.gpu]
+runner_labels = ["gpu", "db-app"]
+sbatch_options = ["-p", "gpu"]
 
-[http]
-bind = "127.0.0.1:6020"
+[partitions.intel]
+runner_labels = ["gpu", "db-app", "intel"]
+sbatch_options = ["-p", "intel"]
