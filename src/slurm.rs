@@ -19,47 +19,21 @@ fn sh_escape<'s>(s: impl Into<Cow<'s, str>>) -> Cow<'s, str> {
     shell_escape::unix::escape(s.into())
 }
 
-fn chain<S: IntoIterator>(a: S, b: S) -> std::iter::Chain<S::IntoIter, S::IntoIter> {
-    a.into_iter().chain(b.into_iter())
-}
-
-fn join<J, I>(joiner: &J, mut iter: I) -> Result<String, fmt::Error>
-    where
-        J: Display + ?Sized,
-        I: Iterator,
-        <I as Iterator>::Item: Display,
-{
-    let mut f = String::new();
-    if let Some(v) = iter.next() {
-        write!(f, "{}", v)?;
-    }
-    for v in iter {
-        write!(f, "{}{}", joiner, v)?;
-    }
-    Ok(f)
-}
-
 pub struct BatchScript<'cfg> {
     pub slurm: &'cfg SlurmConfig,
     pub runner: &'cfg ActionRunnerConfig,
     pub mapping: &'cfg MapConfig,
     pub runner_seq: u64,
+    pub concurrent_id: u64,
 }
 
 impl Display for BatchScript<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "#!/bin/bash")?;
         for opt_group in [&self.slurm.sbatch_args, &self.mapping.sbatch_args] {
-            if (!opt_group.is_empty()) {
-                write!(
-                    f,
-                    "\n#SBATCH {}",
-                    opt_group
-                        .iter()
-                        .map(sh_escape)
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                )?;
+            if !opt_group.is_empty() {
+                let escaped_opts: Vec<_> = opt_group.iter().map(sh_escape).collect();
+                write!(f, "\n#SBATCH {}", escaped_opts.join(" "))?;
             }
         }
 
@@ -71,21 +45,45 @@ impl Display for BatchScript<'_> {
         write!(
             f,
             r#"
+#SBATCH -J {name}
 
-{path}/config.sh \
+set -e -o pipefail -o noclobber
+CONCURRENT_DIR="$HOME/slurmactiond/concurrent/{concurrent_id}"
+if ! [ -d "$CONCURRENT_DIR" ]; then
+    mkdir -p "$CONCURRENT_DIR"
+    cd "$CONCURRENT_DIR"
+    tar xf {tarball}
+fi
+cd "$CONCURRENT_DIR"
+./config.sh \
     --unattend \
     --url {url} \
     --token {token} \
     --name {name} \
-    --labels {labels} \
-    --ephemeral
-{path}/run.sh
-"#,
-            path = sh_escape(&self.runner.installation_path),
+    --labels {labels} \"#,
+            tarball = sh_escape(&self.runner.tarball),
             url = sh_escape(&self.runner.repository_url),
             token = sh_escape(&self.runner.registration_token),
             name = sh_escape(format!("{}-{}", &self.runner.name_prefix, &self.runner_seq)),
             labels = sh_escape(all_labels.join(",")),
+            concurrent_id = self.concurrent_id,
+        )?;
+
+        if let Some(group) = &self.runner.group {
+            write!(
+                f,
+                r#"
+    --runner-group {} \"#,
+                sh_escape(group)
+            )?;
+        }
+
+        write!(
+            f,
+            r#"
+    --ephemeral
+./run.sh
+"#
         )
     }
 }

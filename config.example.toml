@@ -3,7 +3,8 @@
 #sbatch_args = ["-A", "account"]
 
 [action_runner]
-installation_path = "/home/cirunner/action-runner"
+tarball = "/home/cirunner/actions-runner-linux-x64-2.290.1.tar.gz"
+#group = "slurm"
 name_prefix = "slurmactiond"
 base_labels = ["slurm"]
 repository_url = "https://github.com/celerity/slurmactiond"
@@ -18,4 +19,4 @@ runner_labels = ["intel"]
 sbatch_args = ["-p", "intel"]
 
 [http]
-listen = "127.0.0.1:6020"
+bind = "127.0.0.1:6020"

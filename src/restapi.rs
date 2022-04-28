@@ -35,21 +35,23 @@ struct WebhookPayload {
 }
 
 #[actix_web::post("/workflow_job")]
-async fn workflow_job(data: Data<Arc<Config>>, req: Json<WebhookPayload>) -> impl Responder {
+async fn workflow_job(data: Data<Config>, req: Json<WebhookPayload>) -> impl Responder {
     BatchScript {
         slurm: &data.slurm,
         runner: &data.action_runner,
         mapping: &data.mappings[0],
         runner_seq: 1234,
+        concurrent_id: 0,
     }
         .to_string()
 }
 
 #[actix_web::main]
 pub async fn main(cfg: Config) -> io::Result<()> {
-    let rc_cfg = Arc::new(cfg);
-    HttpServer::new(move || App::new().app_data(Data::new(rc_cfg.clone())).service(workflow_job))
-        .bind("127.0.0.1:6020")?
+    let bind_address = cfg.http.bind.clone();
+    let data = Data::new(cfg);
+    HttpServer::new(move || App::new().app_data(data.clone()).service(workflow_job))
+        .bind(bind_address)?
         .run()
         .await
 }

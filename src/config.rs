@@ -14,7 +14,8 @@ pub struct MapConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct ActionRunnerConfig {
-    pub installation_path: String,
+    pub tarball: String,
+    pub group: Option<String>,
     pub name_prefix: String,
     pub base_labels: Vec<String>,
     pub repository_url: String,
@@ -23,7 +24,7 @@ pub struct ActionRunnerConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct HttpConfig {
-    pub listen: String,
+    pub bind: String,
 }
 
 #[derive(Debug, Deserialize)]
