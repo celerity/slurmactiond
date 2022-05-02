@@ -1,5 +1,5 @@
 [http]
-bind = "127.0.0.1:6020"
+bind = "127.0.0.1:8020"
 
 [slurm]
 #sbatch = "/usr/bin/sbatch"

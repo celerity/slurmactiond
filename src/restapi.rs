@@ -1,14 +1,19 @@
 use std::io;
 
-use actix_web::{App, HttpServer, Responder};
 use actix_web::http::StatusCode;
 use actix_web::web::{Data, Json};
+use actix_web::{guard, web, App, FromRequest, Handler, HttpServer, Responder, Route};
 use log::{debug, info};
 use serde::Deserialize;
 
-use crate::Config;
 use crate::config::PartitionId;
 use crate::slurm::batch_submit;
+use crate::Config;
+
+type StaticContent = (&'static str, StatusCode);
+type StaticResult = actix_web::Result<StaticContent>;
+
+const NO_CONTENT: StaticContent = ("", StatusCode::NO_CONTENT);
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -25,12 +30,11 @@ struct WorkflowJob {
     #[serde(rename = "run_id")]
     job_id: u64,
     name: String,
-    status: WorkflowStatus,
     labels: Vec<String>,
 }
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
-struct WebhookPayload {
+struct WorkflowJobPayload {
     action: WorkflowStatus,
     workflow_job: WorkflowJob,
 }
@@ -43,7 +47,10 @@ fn match_partition<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c Part
         .filter(|(_, p)| unmatched_labels.iter().all(|l| p.runner_labels.contains(l)))
         .min_by_key(|(_, p)| p.runner_labels.len()); // min: closest match
     if let Some((id, _)) = closest_matching_partition {
-        debug!("matched runner labels {:?} to partition {}", job.labels, id.0);
+        debug!(
+            "matched runner labels {:?} to partition {}",
+            job.labels, id.0
+        );
         Some(id)
     } else {
         debug!("runner labels {:?} do not match any partition", job.labels);
@@ -51,24 +58,53 @@ fn match_partition<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c Part
     }
 }
 
-#[actix_web::post("/workflow_job")]
-async fn workflow_job(data: Data<Config>, payload: Json<WebhookPayload>) -> impl Responder {
-    if let Some(part_id) = match_partition(&data, &payload.workflow_job) {
-        let job_id = batch_submit(&data, &part_id)?;
-        info!("submitted SLURM job {} for runner job {} of workflow {}", job_id.0,
-            payload.workflow_job.job_id, payload.workflow_job.workflow_id);
+async fn workflow_job_event(data: Data<Config>, payload: Json<WorkflowJobPayload>) -> StaticResult {
+    if payload.action == WorkflowStatus::Queued {
+        if let Some(part_id) = match_partition(&data, &payload.workflow_job) {
+            let job_id = batch_submit(&data, &part_id)?;
+            info!(
+                "submitted SLURM job {} for runner job {} of workflow {} ({})",
+                job_id.0,
+                payload.workflow_job.job_id,
+                payload.workflow_job.workflow_id,
+                payload.workflow_job.name
+            );
+        }
     }
-    Result::<_, io::Error>::Ok(("", StatusCode::NO_CONTENT))
+    Ok(NO_CONTENT)
+}
+
+#[derive(Deserialize, Debug)]
+struct PingPayload {}
+
+async fn ping_event(_: Json<PingPayload>) -> StaticResult {
+    Ok(("pong", StatusCode::OK))
+}
+
+fn github_event_route<F, Args>(event: &'static str, handler: F) -> Route
+where
+    F: Handler<Args>,
+    Args: FromRequest + 'static,
+    F::Output: Responder + 'static,
+{
+    web::post()
+        .guard(guard::Header("X-Github-Event", event))
+        .to(handler)
 }
 
 #[actix_web::main]
 pub async fn main(cfg: Config) -> io::Result<()> {
     let bind_address = cfg.http.bind.clone();
     let data = Data::new(cfg);
-    HttpServer::new(move || App::new().app_data(data.clone()).service(workflow_job))
-        .bind(bind_address)?
-        .run()
-        .await
+    HttpServer::new(move || {
+        App::new()
+            .app_data(data.clone())
+            .route("/", github_event_route("workflow_job", workflow_job_event))
+            .route("/", github_event_route("ping", ping_event))
+    })
+    .bind(bind_address)?
+    .run()
+    .await
 }
 
 #[test]
@@ -76,16 +112,15 @@ fn test_deserialize_payload() {
     use crate::restapi::WorkflowStatus::InProgress;
 
     let json = include_str!("../testdata/workflow_job.json");
-    let payload: WebhookPayload = serde_json::from_str(json).unwrap();
+    let payload: WorkflowJobPayload = serde_json::from_str(json).unwrap();
     assert_eq!(
         payload,
-        WebhookPayload {
+        WorkflowJobPayload {
             action: InProgress,
             workflow_job: WorkflowJob {
                 workflow_id: 2832853555,
                 job_id: 940463255,
                 name: String::from("Test workflow"),
-                status: InProgress,
                 labels: Vec::from(["gpu", "db-app", "dc-03"].map(String::from)),
             },
         }
