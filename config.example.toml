@@ -1,5 +1,6 @@
 [http]
 bind = "127.0.0.1:8020"
+secret = "as specified in the Webhook Configuration"
 
 [github]
 entity = "celerity/slurmactiond"
@@ -11,7 +12,7 @@ sbatch_options = ["-t", "1:00:00"]
 job_name = "action-runner"
 
 [action_runner]
-tarball = "/home/cirunner/actions-runner-linux-x64-2.290.1.tar.gz"
+platform = "linux-x64"
 work_dir = "/home/cirunner/slurmactiond"
 
 [action_runner.registration]

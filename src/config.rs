@@ -38,7 +38,7 @@ pub struct RunnerRegistrationConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct RunnerConfig {
-    pub tarball: String,
+    pub platform: String,
     pub work_dir: String,
     pub registration: RunnerRegistrationConfig,
 }

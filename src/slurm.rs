@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::str::from_utf8;
 
 use crate::config::{Config, PartitionId};
-use crate::github::RunnerRegistrationToken;
+use crate::github::{Asset, RunnerRegistrationToken};
 
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub struct JobId(pub u64);
@@ -21,6 +21,7 @@ fn sh_escape<'s>(s: impl Into<Cow<'s, str>>) -> Cow<'s, str> {
 
 struct BatchScript<'c> {
     config: &'c Config,
+    tarball: &'c Asset,
     partition: &'c PartitionId,
     token: &'c RunnerRegistrationToken,
 }
@@ -64,7 +65,11 @@ cleanup() {{ cd; rm -rf "$JOB_DIR"; }}
 trap cleanup EXIT
 
 cd "$JOB_DIR"
-tar xf {tarball}
+if ! [ -f {tarball_name} ]; then
+    curl -SsfL {tarball_url} -o {tarball_name}
+fi
+tar xf {tarball_name}
+
 ./config.sh \
     --unattended \
     --url https://github.com/{entity} \
@@ -73,7 +78,8 @@ tar xf {tarball}
     --labels {labels} \"#,
             job_name = sh_escape(&config.slurm.job_name),
             work_dir = sh_escape(&config.runner.work_dir),
-            tarball = sh_escape(&config.runner.tarball),
+            tarball_url = sh_escape(&self.tarball.url),
+            tarball_name = sh_escape(&self.tarball.name),
             entity = sh_escape(&config.github.entity.to_string()),
             token = sh_escape(&self.token.0),
             runner_name = sh_escape(&config.runner.registration.name),
@@ -93,6 +99,7 @@ tar xf {tarball}
 
 pub fn batch_submit(
     config: &Config,
+    tarball: &Asset,
     partition: &PartitionId,
     token: &RunnerRegistrationToken,
 ) -> io::Result<JobId> {
@@ -106,6 +113,7 @@ pub fn batch_submit(
         .spawn()?;
     let script = BatchScript {
         config,
+        tarball,
         partition,
         token,
     }

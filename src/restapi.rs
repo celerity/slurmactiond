@@ -76,6 +76,9 @@ fn match_partition<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c Part
 async fn workflow_job_event(config: &Config, payload: &WorkflowJobPayload) -> StaticResult {
     if payload.action == WorkflowStatus::Queued {
         if let Some(part_id) = match_partition(&config, &payload.workflow_job) {
+            let runner_tarball = github::locate_runner_tarball(&config.runner.platform)
+                .await
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e}")))?;
             let token_fut = github::generate_runner_registration_token(
                 &config.github.entity,
                 &config.github.api_token,
@@ -83,7 +86,7 @@ async fn workflow_job_event(config: &Config, payload: &WorkflowJobPayload) -> St
             let token = token_fut
                 .await
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e}")))?;
-            let job_id = batch_submit(&config, &part_id, &token)?;
+            let job_id = batch_submit(&config, &runner_tarball, &part_id, &token)?;
             info!(
                 "submitted SLURM job {} for runner job {} of workflow {}({})",
                 job_id.0,
