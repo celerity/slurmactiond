@@ -53,7 +53,8 @@ pub struct Config {
     pub http: HttpConfig,
     pub github: GithubConfig,
     pub slurm: SlurmConfig,
-    #[serde(rename = "action_runner")] pub runner: RunnerConfig,
+    #[serde(rename = "action_runner")]
+    pub runner: RunnerConfig,
     pub partitions: HashMap<PartitionId, PartitionConfig>,
 }
 

@@ -20,10 +20,10 @@ impl TryFrom<&str> for Entity {
     type Error = InvalidEntityError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        let re = Regex::new("([^/]+)(?:/([^/]+))?").unwrap();
+        let re = Regex::new("^([^/]+)(?:/([^/]+))?$").unwrap();
         let caps = re.captures(s).ok_or(InvalidEntityError)?;
         let get_string = |i| caps.get(i).map(|m| m.as_str().to_owned());
-        match (get_string(1), get_string(3)) {
+        match (get_string(1), get_string(2)) {
             (Some(org), None) => Ok(Entity::Organization(org)),
             (Some(org), Some(repo)) => Ok(Entity::Repository(org, repo)),
             _ => Err(InvalidEntityError),
