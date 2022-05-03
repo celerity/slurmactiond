@@ -1,20 +1,34 @@
+use std::convert::Infallible;
+use std::fmt::Debug;
 use std::io;
 
+use actix_web::{App, HttpMessage, HttpServer, ResponseError, web};
+use actix_web::error::ParseError;
+use actix_web::http::header::{Header, HeaderName, HeaderValue, TryIntoHeaderValue};
 use actix_web::http::StatusCode;
-use actix_web::web::{Data, Json};
-use actix_web::{guard, web, App, FromRequest, Handler, HttpServer, Responder, Route};
+use derive_more::Display;
 use log::{debug, info};
 use serde::Deserialize;
 
+use crate::Config;
 use crate::config::PartitionId;
 use crate::github;
 use crate::slurm::batch_submit;
-use crate::Config;
 
 type StaticContent = (&'static str, StatusCode);
 type StaticResult = actix_web::Result<StaticContent>;
 
 const NO_CONTENT: StaticContent = ("", StatusCode::NO_CONTENT);
+
+#[derive(Debug, Display)]
+#[display(fmt = "Bad Request: {}", _0)]
+struct BadRequest(String);
+
+impl ResponseError for BadRequest {
+    fn status_code(&self) -> StatusCode {
+        StatusCode::BAD_REQUEST
+    }
+}
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -59,10 +73,7 @@ fn match_partition<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c Part
     }
 }
 
-async fn workflow_job_event(
-    config: Data<Config>,
-    payload: Json<WorkflowJobPayload>
-) -> StaticResult {
+async fn workflow_job_event(config: &Config, payload: &WorkflowJobPayload) -> StaticResult {
     if payload.action == WorkflowStatus::Queued {
         if let Some(part_id) = match_partition(&config, &payload.workflow_job) {
             let token_fut = github::generate_runner_registration_token(
@@ -85,37 +96,95 @@ async fn workflow_job_event(
     Ok(NO_CONTENT)
 }
 
-#[derive(Deserialize, Debug)]
-struct PingPayload {}
-
-async fn ping_event(_: Json<PingPayload>) -> StaticResult {
-    Ok(("pong", StatusCode::OK))
+#[derive(Debug)]
+enum GithubEvent {
+    WorkflowJob,
+    Other,
 }
 
-fn github_event_route<F, Args>(event: &'static str, handler: F) -> Route
-where
-    F: Handler<Args>,
-    Args: FromRequest + 'static,
-    F::Output: Responder + 'static,
-{
-    web::post()
-        .guard(guard::Header("X-Github-Event", event))
-        .to(handler)
+impl TryIntoHeaderValue for GithubEvent {
+    type Error = Infallible;
+    fn try_into_value(self) -> Result<HeaderValue, Self::Error> {
+        unimplemented!();
+    }
+}
+
+impl Header for GithubEvent {
+    fn name() -> HeaderName {
+        HeaderName::from_static("x-github-event")
+    }
+
+    fn parse<M: HttpMessage>(msg: &M) -> Result<Self, ParseError> {
+        let value = msg.headers().get(Self::name()).ok_or(ParseError::Header)?;
+        match value.as_bytes() {
+            b"workflow_job" => Ok(GithubEvent::WorkflowJob),
+            _ => Ok(GithubEvent::Other),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct HubSignature256([u8; 32]);
+
+impl TryIntoHeaderValue for HubSignature256 {
+    type Error = Infallible;
+    fn try_into_value(self) -> Result<HeaderValue, Self::Error> {
+        unimplemented!();
+    }
+}
+
+impl Header for HubSignature256 {
+    fn name() -> HeaderName {
+        HeaderName::from_static("x-hub-signature-256")
+    }
+
+    fn parse<M: HttpMessage>(msg: &M) -> Result<Self, ParseError> {
+        use hex::FromHex;
+        let value = msg.headers().get(Self::name()).ok_or(ParseError::Header)?;
+        let lead = b"sha256=";
+        if value.as_bytes().starts_with(lead) {
+            let hex = &value.as_bytes()[lead.len()..];
+            let sha = FromHex::from_hex(hex).map_err(|_| ParseError::Header)?;
+            Ok(HubSignature256(sha))
+        } else {
+            Err(ParseError::Header)
+        }
+    }
+}
+
+#[actix_web::post("/")]
+async fn webhook_event(
+    event: web::Header<GithubEvent>,
+    sig: web::Header<HubSignature256>,
+    payload: web::Bytes,
+    config: web::Data<Config>,
+) -> StaticResult {
+    use hmac::Mac;
+    type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+
+    let mut mac = HmacSha256::new_from_slice(config.http.secret.as_bytes()).unwrap();
+    mac.update(&payload);
+    mac.verify_slice(&sig.0.0)
+        .map_err(|_| BadRequest("Signature header did not match payload".to_owned()))?;
+
+    match event.0 {
+        GithubEvent::WorkflowJob => {
+            let p = serde_json::from_slice(&payload).map_err(|e| BadRequest(format!("{e}")))?;
+            workflow_job_event(config.as_ref(), &p).await?;
+            Ok(NO_CONTENT)
+        }
+        GithubEvent::Other => Ok(NO_CONTENT),
+    }
 }
 
 #[actix_web::main]
 pub async fn main(cfg: Config) -> io::Result<()> {
     let bind_address = cfg.http.bind.clone();
-    let data = Data::new(cfg);
-    HttpServer::new(move || {
-        App::new()
-            .app_data(data.clone())
-            .route("/", github_event_route("workflow_job", workflow_job_event))
-            .route("/", github_event_route("ping", ping_event))
-    })
-    .bind(bind_address)?
-    .run()
-    .await
+    let data = web::Data::new(cfg);
+    HttpServer::new(move || App::new().app_data(data.clone()).service(webhook_event))
+        .bind(bind_address)?
+        .run()
+        .await
 }
 
 #[test]

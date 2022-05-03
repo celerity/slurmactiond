@@ -46,6 +46,7 @@ pub struct RunnerConfig {
 #[derive(Debug, Deserialize)]
 pub struct HttpConfig {
     pub bind: String,
+    pub secret: String,
 }
 
 #[derive(Debug, Deserialize)]
