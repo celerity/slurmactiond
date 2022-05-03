@@ -1,6 +1,10 @@
 [http]
 bind = "127.0.0.1:8020"
 
+[github]
+entity = "celerity/slurmactiond"
+api_token = "ghp_5Hx6y27fF10fjF01jfJpQrtT915931520A"
+
 [slurm]
 #sbatch = "/usr/bin/sbatch"
 sbatch_options = ["-t", "1:00:00"]
@@ -11,8 +15,6 @@ tarball = "/home/cirunner/actions-runner-linux-x64-2.290.1.tar.gz"
 work_dir = "/home/cirunner/slurmactiond"
 
 [action_runner.registration]
-url = "https://github.com/celerity"
-token = "A1b2C3d4E5f6"
 name = "slurm"
 labels = ["slurm", "dc-03"]
 

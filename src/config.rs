@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
+use crate::github;
+
 #[derive(Debug, Deserialize, Default)]
 pub struct SlurmConfig {
     pub sbatch: Option<String>,
@@ -22,9 +24,13 @@ pub struct PartitionConfig {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct GithubConfig {
+    pub entity: github::Entity,
+    pub api_token: github::ApiToken,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct RunnerRegistrationConfig {
-    pub url: String,
-    pub token: String,
     pub name: String,
     #[serde(default)]
     pub labels: Vec<String>,
@@ -45,9 +51,9 @@ pub struct HttpConfig {
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub http: HttpConfig,
+    pub github: GithubConfig,
     pub slurm: SlurmConfig,
-    #[serde(rename = "action_runner")]
-    pub runner: RunnerConfig,
+    #[serde(rename = "action_runner")] pub runner: RunnerConfig,
     pub partitions: HashMap<PartitionId, PartitionConfig>,
 }
 

@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use std::str::from_utf8;
 
 use crate::config::{Config, PartitionId};
+use crate::github::RunnerRegistrationToken;
 
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub struct JobId(pub u64);
@@ -21,6 +22,7 @@ fn sh_escape<'s>(s: impl Into<Cow<'s, str>>) -> Cow<'s, str> {
 struct BatchScript<'c> {
     config: &'c Config,
     partition: &'c PartitionId,
+    token: &'c RunnerRegistrationToken,
 }
 
 fn write_batch_opts<S: Display>(f: &mut Formatter<'_>, opts: &[S]) -> fmt::Result {
@@ -64,16 +66,16 @@ trap cleanup EXIT
 cd "$JOB_DIR"
 tar xf {tarball}
 ./config.sh \
-    --unattend \
-    --url {url} \
+    --unattended \
+    --url https://github.com/{entity} \
     --token {token} \
     --name {runner_name}-{part_name}-"$SLURM_JOB_ID" \
     --labels {labels} \"#,
             job_name = sh_escape(&config.slurm.job_name),
             work_dir = sh_escape(&config.runner.work_dir),
             tarball = sh_escape(&config.runner.tarball),
-            url = sh_escape(&config.runner.registration.url),
-            token = sh_escape(&config.runner.registration.token),
+            entity = sh_escape(&config.github.entity.to_string()),
+            token = sh_escape(&self.token.0),
             runner_name = sh_escape(&config.runner.registration.name),
             part_name = sh_escape(&self.partition.0),
             labels = sh_escape(all_labels.join(",")),
@@ -89,7 +91,11 @@ tar xf {tarball}
     }
 }
 
-pub fn batch_submit(config: &Config, partition: &PartitionId) -> io::Result<JobId> {
+pub fn batch_submit(
+    config: &Config,
+    partition: &PartitionId,
+    token: &RunnerRegistrationToken,
+) -> io::Result<JobId> {
     use std::io::Write;
 
     let sbatch = config.slurm.sbatch.as_deref().unwrap_or("sbatch");
@@ -98,7 +104,12 @@ pub fn batch_submit(config: &Config, partition: &PartitionId) -> io::Result<JobI
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let script = BatchScript { config, partition }.to_string();
+    let script = BatchScript {
+        config,
+        partition,
+        token,
+    }
+        .to_string();
     child.stdin.as_ref().unwrap().write_all(script.as_bytes())?;
     let output = child.wait_with_output()?;
     if output.status.success() {
@@ -115,6 +126,9 @@ pub fn batch_submit(config: &Config, partition: &PartitionId) -> io::Result<JobI
     )?;
     into_io_result(
         Err(stderr),
-        &format!("sbatch returned exit code {}", output.status.code().unwrap()),
+        &format!(
+            "sbatch returned exit code {}",
+            output.status.code().unwrap()
+        ),
     )
 }

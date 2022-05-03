@@ -7,6 +7,7 @@ use log::{debug, info};
 use serde::Deserialize;
 
 use crate::config::PartitionId;
+use crate::github;
 use crate::slurm::batch_submit;
 use crate::Config;
 
@@ -58,12 +59,22 @@ fn match_partition<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c Part
     }
 }
 
-async fn workflow_job_event(data: Data<Config>, payload: Json<WorkflowJobPayload>) -> StaticResult {
+async fn workflow_job_event(
+    config: Data<Config>,
+    payload: Json<WorkflowJobPayload>
+) -> StaticResult {
     if payload.action == WorkflowStatus::Queued {
-        if let Some(part_id) = match_partition(&data, &payload.workflow_job) {
-            let job_id = batch_submit(&data, &part_id)?;
+        if let Some(part_id) = match_partition(&config, &payload.workflow_job) {
+            let token_fut = github::generate_runner_registration_token(
+                &config.github.entity,
+                &config.github.api_token,
+            );
+            let token = token_fut
+                .await
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e}")))?;
+            let job_id = batch_submit(&config, &part_id, &token)?;
             info!(
-                "submitted SLURM job {} for runner job {} of workflow {} ({})",
+                "submitted SLURM job {} for runner job {} of workflow {}({})",
                 job_id.0,
                 payload.workflow_job.job_id,
                 payload.workflow_job.workflow_id,
