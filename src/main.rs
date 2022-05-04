@@ -11,7 +11,6 @@ mod slurm;
 mod webhook;
 
 fn main_inner() -> Result<(), String> {
-    env_logger::init();
     let cfg_path = Path::new("config.toml");
     let cfg = fs::read(cfg_path)
         .and_then(|bytes| Ok(toml::from_slice(&bytes)?))
@@ -20,6 +19,9 @@ fn main_inner() -> Result<(), String> {
 }
 
 fn main() {
+    let env = env_logger::Env::default().default_filter_or("info");
+    env_logger::Builder::from_env(env).init();
+
     if let Err(e) = main_inner() {
         error!("{e}");
         std::process::exit(1);
