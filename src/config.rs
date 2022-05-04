@@ -14,10 +14,10 @@ pub struct SlurmConfig {
 
 #[derive(Debug, Deserialize, Hash, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct PartitionId(pub String);
+pub struct TargetId(pub String);
 
 #[derive(Debug, Deserialize)]
-pub struct PartitionConfig {
+pub struct TargetConfig {
     pub runner_labels: Vec<String>,
     #[serde(default)]
     pub sbatch_options: Vec<String>,
@@ -56,7 +56,7 @@ pub struct Config {
     pub slurm: SlurmConfig,
     #[serde(rename = "action_runner")]
     pub runner: RunnerConfig,
-    pub partitions: HashMap<PartitionId, PartitionConfig>,
+    #[serde(default)] pub targets: HashMap<TargetId, TargetConfig>,
 }
 
 #[test]

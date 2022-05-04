@@ -19,10 +19,10 @@ work_dir = "/home/cirunner/slurmactiond"
 name = "slurm"
 labels = ["slurm", "dc-03"]
 
-[partitions.gpu]
+[targets.gpu]
 runner_labels = ["gpu", "db-app"]
 sbatch_options = ["-p", "gpu"]
 
-[partitions.intel]
+[targets.intel]
 runner_labels = ["gpu", "db-app", "intel"]
 sbatch_options = ["-p", "intel"]

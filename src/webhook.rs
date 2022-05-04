@@ -11,7 +11,7 @@ use log::{debug, error, info};
 use serde::Deserialize;
 
 use crate::Config;
-use crate::config::PartitionId;
+use crate::config::TargetId;
 use crate::github;
 use crate::slurm::batch_submit;
 
@@ -69,28 +69,28 @@ struct WorkflowJobPayload {
     workflow_job: WorkflowJob,
 }
 
-fn match_partition<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c PartitionId> {
+fn match_target<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c TargetId> {
     let unmatched_labels: Vec<_> = (job.labels.iter())
         .filter(|l| !config.runner.registration.labels.contains(l))
         .collect();
-    let closest_matching_partition = (config.partitions.iter())
+    let closest_matching_target = (config.targets.iter())
         .filter(|(_, p)| unmatched_labels.iter().all(|l| p.runner_labels.contains(l)))
         .min_by_key(|(_, p)| p.runner_labels.len()); // min: closest match
-    if let Some((id, _)) = closest_matching_partition {
+    if let Some((id, _)) = closest_matching_target {
         debug!(
-            "matched runner labels {:?} to partition {}",
+            "matched runner labels {:?} to target {}",
             job.labels, id.0
         );
         Some(id)
     } else {
-        debug!("runner labels {:?} do not match any partition", job.labels);
+        debug!("runner labels {:?} do not match any target", job.labels);
         None
     }
 }
 
 async fn workflow_job_event(config: &Config, payload: &WorkflowJobPayload) -> StaticResult {
     if payload.action == WorkflowStatus::Queued {
-        if let Some(part_id) = match_partition(&config, &payload.workflow_job) {
+        if let Some(part_id) = match_target(&config, &payload.workflow_job) {
             let runner_tarball = github::locate_runner_tarball(&config.runner.platform)
                 .await
                 .map_err(|e| internal_server_error("Locating latest Actions Runner release", e))?;
