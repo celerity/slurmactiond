@@ -3,21 +3,15 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::process::{Command, Stdio};
-use std::str::from_utf8;
+
+use derive_more::{Display, From};
+use log::debug;
 
 use crate::config::{Config, PartitionId};
 use crate::github::{Asset, RunnerRegistrationToken};
 
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub struct JobId(pub u64);
-
-fn into_io_result<T, E: Display>(r: Result<T, E>, cause: &str) -> io::Result<T> {
-    r.map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{cause}: {e}")))
-}
-
-fn sh_escape<'s>(s: impl Into<Cow<'s, str>>) -> Cow<'s, str> {
-    shell_escape::unix::escape(s.into())
-}
 
 struct BatchScript<'c> {
     config: &'c Config,
@@ -34,6 +28,10 @@ fn write_batch_opts<S: Display>(f: &mut Formatter<'_>, opts: &[S]) -> fmt::Resul
         }
     }
     Ok(())
+}
+
+fn sh_escape<'s>(s: impl Into<Cow<'s, str>>) -> Cow<'s, str> {
+    shell_escape::unix::escape(s.into())
 }
 
 impl Display for BatchScript<'_> {
@@ -97,12 +95,30 @@ tar xf {tarball_name}
     }
 }
 
+#[derive(Debug, Display, From)]
+pub enum SlurmError {
+    #[display(fmt = "I/O error: {}", _0)]
+    IoError(io::Error),
+    #[display(
+    fmt = "Child process exited with status {}, error message:\n{}",
+    status,
+    message
+    )]
+    ErrorExit { status: i32, message: String },
+}
+
+impl SlurmError {
+    pub fn from_other(message: String) -> Self {
+        SlurmError::IoError(io::Error::new(io::ErrorKind::Other, message))
+    }
+}
+
 pub fn batch_submit(
     config: &Config,
     tarball: &Asset,
     partition: &PartitionId,
     token: &RunnerRegistrationToken,
-) -> io::Result<JobId> {
+) -> Result<JobId, SlurmError> {
     use std::io::Write;
 
     let sbatch = config.slurm.sbatch.as_deref().unwrap_or("sbatch");
@@ -116,27 +132,27 @@ pub fn batch_submit(
         tarball,
         partition,
         token,
-    }
-        .to_string();
-    child.stdin.as_ref().unwrap().write_all(script.as_bytes())?;
+    };
+    debug!("{script}");
+    child
+        .stdin
+        .as_ref()
+        .unwrap()
+        .write_all(script.to_string().as_bytes())?;
     let output = child.wait_with_output()?;
     if output.status.success() {
-        let stdout = into_io_result(from_utf8(&output.stdout), "cannot decode sbatch output")?;
-        let job_id = into_io_result(
-            stdout.trim().parse(),
-            "cannot interpret sbatch output as job id",
-        )?;
+        let stdout = String::from_utf8(output.stdout)
+            .map_err(|e| SlurmError::from_other(format!("cannot decode sbatch output: {e}")))?;
+        let job_id = stdout
+            .trim()
+            .parse()
+            .map_err(|e| SlurmError::from_other(format!("cannot parse sbatch output: {e}")))?;
         return Ok(JobId(job_id));
     }
-    let stderr = into_io_result(
-        from_utf8(&output.stderr),
-        "cannot decode sbatch error message",
-    )?;
-    into_io_result(
-        Err(stderr),
-        &format!(
-            "sbatch returned exit code {}",
-            output.status.code().unwrap()
-        ),
-    )
+    let stderr = String::from_utf8(output.stderr)
+        .map_err(|e| SlurmError::from_other(format!("cannot decode sbatch error: {e}")))?;
+    Err(SlurmError::ErrorExit {
+        status: output.status.code().unwrap(),
+        message: stderr,
+    })
 }

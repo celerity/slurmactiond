@@ -1,5 +1,5 @@
 use std::convert::Infallible;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::io;
 
 use actix_web::{App, HttpMessage, HttpServer, ResponseError, web};
@@ -7,7 +7,7 @@ use actix_web::error::ParseError;
 use actix_web::http::header::{Header, HeaderName, HeaderValue, TryIntoHeaderValue};
 use actix_web::http::StatusCode;
 use derive_more::Display;
-use log::{debug, info};
+use log::{debug, error, info};
 use serde::Deserialize;
 
 use crate::Config;
@@ -28,6 +28,21 @@ impl ResponseError for BadRequest {
     fn status_code(&self) -> StatusCode {
         StatusCode::BAD_REQUEST
     }
+}
+
+#[derive(Debug, Display)]
+#[display(fmt = "Something went wrong on our end. Please consult the slurmactiond logs.")]
+struct InternalServerError;
+
+impl ResponseError for InternalServerError {
+    fn status_code(&self) -> StatusCode {
+        StatusCode::INTERNAL_SERVER_ERROR
+    }
+}
+
+fn internal_server_error(cause: &str, e: impl Display) -> InternalServerError {
+    error!("Internal Server Error: {cause} {e}");
+    InternalServerError
 }
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
@@ -78,17 +93,18 @@ async fn workflow_job_event(config: &Config, payload: &WorkflowJobPayload) -> St
         if let Some(part_id) = match_partition(&config, &payload.workflow_job) {
             let runner_tarball = github::locate_runner_tarball(&config.runner.platform)
                 .await
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e}")))?;
+                .map_err(|e| internal_server_error("Locating latest Actions Runner release", e))?;
             let token_fut = github::generate_runner_registration_token(
                 &config.github.entity,
                 &config.github.api_token,
             );
             let token = token_fut
                 .await
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e}")))?;
-            let job_id = batch_submit(&config, &runner_tarball, &part_id, &token)?;
+                .map_err(|e| internal_server_error("Generating runner registration token", e))?;
+            let job_id = batch_submit(&config, &runner_tarball, &part_id, &token)
+                .map_err(|e| internal_server_error("Submitting job to SLURM", e))?;
             info!(
-                "submitted SLURM job {} for runner job {} of workflow {}({})",
+                "submitted SLURM job {} for runner job {} of workflow {} ({})",
                 job_id.0,
                 payload.workflow_job.job_id,
                 payload.workflow_job.workflow_id,
@@ -168,7 +184,7 @@ async fn webhook_event(
     let mut mac = HmacSha256::new_from_slice(config.http.secret.as_bytes()).unwrap();
     mac.update(&payload);
     mac.verify_slice(&sig.0.0)
-        .map_err(|_| BadRequest("Signature header did not match payload".to_owned()))?;
+        .map_err(|_| BadRequest("HMAC mismatch".to_owned()))?;
 
     match event.0 {
         GithubEvent::WorkflowJob => {
@@ -192,7 +208,7 @@ pub async fn main(cfg: Config) -> io::Result<()> {
 
 #[test]
 fn test_deserialize_payload() {
-    use crate::restapi::WorkflowStatus::InProgress;
+    use crate::webhook::WorkflowStatus::InProgress;
 
     let json = include_str!("../testdata/workflow_job.json");
     let payload: WorkflowJobPayload = serde_json::from_str(json).unwrap();
