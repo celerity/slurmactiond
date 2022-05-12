@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
+use derive_more::{From, FromStr};
 
 use serde::Deserialize;
 
@@ -12,7 +14,7 @@ pub struct SlurmConfig {
     pub job_name: String,
 }
 
-#[derive(Debug, Deserialize, Hash, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Hash, PartialEq, Eq, From, FromStr)]
 #[serde(transparent)]
 pub struct TargetId(pub String);
 
@@ -39,7 +41,7 @@ pub struct RunnerRegistrationConfig {
 #[derive(Debug, Deserialize)]
 pub struct RunnerConfig {
     pub platform: String,
-    pub work_dir: String,
+    pub work_dir: PathBuf,
     pub registration: RunnerRegistrationConfig,
 }
 

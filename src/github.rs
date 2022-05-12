@@ -1,9 +1,12 @@
-use awc::{Client, ClientRequest, http::header};
-use awc::error::{JsonPayloadError, SendRequestError};
-use awc::http::Method;
+use awc::error::{HeaderValue, JsonPayloadError, PayloadError, SendRequestError};
+use awc::http::header::{HeaderName};
+use awc::http::{Method, StatusCode};
+use awc::{http::header, Client, SendClientRequest};
 use derive_more::{Display, From};
 use regex::Regex;
 use serde::Deserialize;
+use std::future::Future;
+use std::io;
 
 #[derive(Deserialize, Debug, Display, PartialEq, Eq)]
 #[serde(try_from = "&str")]
@@ -51,6 +54,8 @@ struct TokenPayload {
 pub enum ApiError {
     #[display(fmt = "{}", _0)]
     SendRequest(SendRequestError),
+    #[display(fmt = "Status {}: {}", _0, _1)]
+    Status(StatusCode, String),
     #[display(fmt = "{}", _0)]
     Payload(JsonPayloadError),
     #[display(fmt = "resource not found")]
@@ -61,25 +66,53 @@ impl std::error::Error for ApiError {}
 
 const GITHUB: &str = "https://api.github.com";
 const RUNNER_TOKEN: &str = "actions/runners/registration-token";
+const USER_AGENT: &str = "slurmactiond";
 
-fn api_request(method: Method, url: String) -> ClientRequest {
-    Client::new()
+trait ResultType {
+    type Payload;
+}
+impl<T, E> ResultType for Result<T, E> {
+    type Payload = T;
+}
+type ClientResponse = <<SendClientRequest as Future>::Output as ResultType>::Payload;
+
+async fn api_request(
+    method: Method,
+    url: String,
+    headers: &[(HeaderName, HeaderValue)],
+) -> Result<ClientResponse, ApiError> {
+    let mut request = Client::new()
         .request(method, url)
         .append_header((header::ACCEPT, "application/vnd.github.v3+json"))
-        .append_header((header::USER_AGENT, "slurmactiond"))
+        .append_header((header::USER_AGENT, USER_AGENT));
+    for (name, value) in headers.into_iter() {
+        request.headers_mut().append(name.clone(), value.clone());
+    }
+    let mut response = request.send().await?;
+    if response.status().is_success() {
+        Ok(response)
+    } else {
+        let body = response
+            .body()
+            .await
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_else(|e| format!("Cannot retrieve HTTP response body: {e}"));
+        Err(ApiError::Status(response.status(), body))
+    }
 }
 
 pub async fn generate_runner_registration_token(
     entity: &Entity,
-    token: &ApiToken,
+    api_token: &ApiToken,
 ) -> Result<RunnerRegistrationToken, ApiError> {
     let endpoint = match entity {
         Entity::Organization(org) => format!("{GITHUB}/orgs/{org}/{RUNNER_TOKEN}"),
         Entity::Repository(org, repo) => format!("{GITHUB}/repos/{org}/{repo}/{RUNNER_TOKEN}"),
     };
-    let request = api_request(Method::POST, endpoint)
-        .append_header((header::AUTHORIZATION, format!("Token {token}")));
-    let response = request.send().await?;
+    let header_token = HeaderValue::try_from(format!("Token {api_token}"))
+        .expect("Invalid bytes in GitHub API token");
+    let headers = [(header::AUTHORIZATION, header_token)];
+    let response = api_request(Method::POST, endpoint, &headers).await?;
     let payload: TokenPayload = { response }.json().await?;
     Ok(payload.token)
 }
@@ -87,6 +120,7 @@ pub async fn generate_runner_registration_token(
 #[derive(Debug, Deserialize)]
 pub struct Asset {
     pub name: String,
+    pub size: u64,
     #[serde(rename = "browser_download_url")]
     pub url: String,
 }
@@ -97,21 +131,45 @@ struct ReleasesPayload {
 }
 
 pub async fn locate_runner_tarball(platform: &str) -> Result<Asset, ApiError> {
-    let request = api_request(
-        Method::GET,
-        format!("{GITHUB}/repos/actions/runner/releases/latest"),
-    );
-    let releases: ReleasesPayload = request.send().await?.json().await?;
+    let endpoint = format!("{GITHUB}/repos/actions/runner/releases/latest");
+    let response = api_request(Method::GET, endpoint, &[]).await?;
+    let releases: ReleasesPayload = { response }.json().await?;
 
-    let tarball_re = Regex::new(&format!(
+    let full_release_re = Regex::new(&format!(
         "^actions-runner-{}-[0-9.]+.tar(?:\\.[a-z0-9]+)?$",
         regex::escape(&platform)
     ))
-        .unwrap();
+    .unwrap();
 
     (releases.assets.into_iter())
-        .find(|a| tarball_re.is_match(&a.name))
+        .find(|a| full_release_re.is_match(&a.name))
         .ok_or(ApiError::NotFound)
+}
+
+#[derive(Debug, Display, From)]
+pub enum DownloadError {
+    #[display(fmt = "{}", _0)]
+    SendRequest(SendRequestError),
+    #[display(fmt = "{}", _0)]
+    Payload(PayloadError),
+    #[display(fmt = "{}", _0)]
+    Io(io::Error),
+    #[display(fmt = "Too many retries")]
+    TooManyRetries,
+}
+
+pub async fn download(url: &str, to: &mut dyn io::Write) -> Result<(), DownloadError> {
+    use futures_util::stream::StreamExt;
+    let mut stream = Client::new()
+        .get(url)
+        .append_header((header::USER_AGENT, USER_AGENT))
+        .send()
+        .await?;
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk?;
+        to.write(&bytes)?;
+    }
+    Ok(())
 }
 
 #[test]

@@ -12,7 +12,6 @@ use serde::Deserialize;
 
 use crate::Config;
 use crate::config::TargetId;
-use crate::github;
 use crate::slurm::batch_submit;
 
 type StaticContent = (&'static str, StatusCode);
@@ -77,10 +76,7 @@ fn match_target<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c TargetI
         .filter(|(_, p)| unmatched_labels.iter().all(|l| p.runner_labels.contains(l)))
         .min_by_key(|(_, p)| p.runner_labels.len()); // min: closest match
     if let Some((id, _)) = closest_matching_target {
-        debug!(
-            "matched runner labels {:?} to target {}",
-            job.labels, id.0
-        );
+        debug!("matched runner labels {:?} to target {}", job.labels, id.0);
         Some(id)
     } else {
         debug!("runner labels {:?} do not match any target", job.labels);
@@ -90,18 +86,9 @@ fn match_target<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c TargetI
 
 async fn workflow_job_event(config: &Config, payload: &WorkflowJobPayload) -> StaticResult {
     if payload.action == WorkflowStatus::Queued {
-        if let Some(part_id) = match_target(&config, &payload.workflow_job) {
-            let runner_tarball = github::locate_runner_tarball(&config.runner.platform)
+        if let Some(target) = match_target(&config, &payload.workflow_job) {
+            let job_id = batch_submit(&config, target)
                 .await
-                .map_err(|e| internal_server_error("Locating latest Actions Runner release", e))?;
-            let token_fut = github::generate_runner_registration_token(
-                &config.github.entity,
-                &config.github.api_token,
-            );
-            let token = token_fut
-                .await
-                .map_err(|e| internal_server_error("Generating runner registration token", e))?;
-            let job_id = batch_submit(&config, &runner_tarball, &part_id, &token)
                 .map_err(|e| internal_server_error("Submitting job to SLURM", e))?;
             info!(
                 "submitted SLURM job {} for runner job {} of workflow {} ({})",
@@ -183,7 +170,7 @@ async fn webhook_event(
 
     let mut mac = HmacSha256::new_from_slice(config.http.secret.as_bytes()).unwrap();
     mac.update(&payload);
-    mac.verify_slice(&sig.0.0)
+    mac.verify_slice(&sig.0 .0)
         .map_err(|_| BadRequest("HMAC mismatch".to_owned()))?;
 
     match event.0 {
