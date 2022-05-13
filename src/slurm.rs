@@ -62,7 +62,7 @@ pub async fn batch_submit(config: &Config, target: &TargetId) -> Result<JobId, S
     writeln!(script, "#SBATCH -J {sh_job_name}-{sh_target_id}")?;
     writeln!(script, "#SBATCH --parsable")?;
     writeln!(script)?;
-    writeln!(script, "exec {sh_executable} {sh_target_id} $SLURM_JOB_ID")?;
+    writeln!(script, "exec {sh_executable} runner {sh_target_id} $SLURM_JOB_ID")?;
 
     let sbatch = config.slurm.sbatch.as_deref().unwrap_or("sbatch");
     if log::max_level() >= LevelFilter::Debug {

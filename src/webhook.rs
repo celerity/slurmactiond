@@ -121,7 +121,10 @@ impl Header for GithubEvent {
     }
 
     fn parse<M: HttpMessage>(msg: &M) -> Result<Self, ParseError> {
-        let value = msg.headers().get(Self::name()).ok_or(ParseError::Header)?;
+        let value = msg.headers().get(Self::name()).ok_or_else(|| {
+            debug!("Header {} missing from request", Self::name());
+            ParseError::Header
+        })?;
         match value.as_bytes() {
             b"workflow_job" => Ok(GithubEvent::WorkflowJob),
             _ => Ok(GithubEvent::Other),
@@ -146,13 +149,20 @@ impl Header for HubSignature256 {
 
     fn parse<M: HttpMessage>(msg: &M) -> Result<Self, ParseError> {
         use hex::FromHex;
-        let value = msg.headers().get(Self::name()).ok_or(ParseError::Header)?;
+        let value = msg.headers().get(Self::name()).ok_or_else(|| {
+            debug!("Header {} missing from request", Self::name());
+            ParseError::Header
+        })?;
         let lead = b"sha256=";
         if value.as_bytes().starts_with(lead) {
             let hex = &value.as_bytes()[lead.len()..];
-            let sha = FromHex::from_hex(hex).map_err(|_| ParseError::Header)?;
+            let sha = FromHex::from_hex(hex).map_err(|e| {
+                debug!("Cannot decode hash from {} header: {e}", Self::name());
+                ParseError::Header
+            })?;
             Ok(HubSignature256(sha))
         } else {
+            debug!("Value of header {} has unexpected format", Self::name());
             Err(ParseError::Header)
         }
     }

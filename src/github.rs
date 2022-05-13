@@ -1,12 +1,14 @@
-use awc::error::{HeaderValue, JsonPayloadError, PayloadError, SendRequestError};
-use awc::http::header::{HeaderName};
-use awc::http::{Method, StatusCode};
-use awc::{http::header, Client, SendClientRequest};
-use derive_more::{Display, From};
-use regex::Regex;
-use serde::Deserialize;
 use std::future::Future;
 use std::io;
+
+use awc::{Client, http::header, SendClientRequest};
+use awc::error::{HeaderValue, JsonPayloadError, PayloadError, SendRequestError};
+use awc::http::{Method, StatusCode};
+use awc::http::header::HeaderName;
+use derive_more::{Display, From};
+use log::debug;
+use regex::Regex;
+use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Display, PartialEq, Eq)]
 #[serde(try_from = "&str")]
@@ -81,6 +83,7 @@ async fn api_request(
     url: String,
     headers: &[(HeaderName, HeaderValue)],
 ) -> Result<ClientResponse, ApiError> {
+    debug!("Sending GitHub API request {method} {url}");
     let mut request = Client::new()
         .request(method, url)
         .append_header((header::ACCEPT, "application/vnd.github.v3+json"))
