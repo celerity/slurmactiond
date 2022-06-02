@@ -8,9 +8,9 @@ use crate::github;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct SlurmConfig {
-    pub sbatch: Option<String>,
+    pub srun: Option<String>,
     #[serde(default)]
-    pub sbatch_options: Vec<String>,
+    pub srun_options: Vec<String>,
     pub job_name: String,
 }
 
@@ -22,7 +22,7 @@ pub struct TargetId(pub String);
 pub struct TargetConfig {
     pub runner_labels: Vec<String>,
     #[serde(default)]
-    pub sbatch_options: Vec<String>,
+    pub srun_options: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

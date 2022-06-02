@@ -17,7 +17,7 @@ mod webhook;
 #[derive(Subcommand, Debug)]
 enum Command {
     Server,
-    Runner { target: TargetId, seq: u64 },
+    Runner { target: TargetId },
 }
 
 #[derive(Parser, Debug)]
@@ -38,7 +38,13 @@ fn main_inner() -> Result<(), String> {
         Command::Server => {
             webhook::main(cfg).map_err(|e| format!("Serving webhook over HTTP: {e}"))
         }
-        Command::Runner { target, seq } => {
+        Command::Runner { target } => {
+            let seq = std::env::vars()
+                .find(|(k, _)| k == "SLURM_JOB_ID")
+                .ok_or_else(|| "Environment variable SLURM_JOB_ID not set".to_owned())?
+                .1
+                .parse()
+                .map_err(|e| format!("Could not parse SLURM_JOB_ID: {e}"))?;
             runner::run(cfg, target, seq).map_err(|e| format!("Starting runner: {e}"))
         }
     }

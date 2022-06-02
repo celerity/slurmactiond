@@ -12,7 +12,7 @@ use serde::Deserialize;
 
 use crate::Config;
 use crate::config::TargetId;
-use crate::slurm::batch_submit;
+use crate::slurm::srun;
 
 type StaticContent = (&'static str, StatusCode);
 type StaticResult = actix_web::Result<StaticContent>;
@@ -87,16 +87,16 @@ fn match_target<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c TargetI
 async fn workflow_job_event(config: &Config, payload: &WorkflowJobPayload) -> StaticResult {
     if payload.action == WorkflowStatus::Queued {
         if let Some(target) = match_target(&config, &payload.workflow_job) {
-            let job_id = batch_submit(&config, target)
-                .await
-                .map_err(|e| internal_server_error("Submitting job to SLURM", e))?;
             info!(
-                "submitted SLURM job {} for runner job {} of workflow {} ({})",
-                job_id.0,
+                "executing SLURM job for runner job {} of workflow {} ({})",
                 payload.workflow_job.job_id,
                 payload.workflow_job.workflow_id,
                 payload.workflow_job.name
             );
+            let status = srun(&config, target)
+                .await
+                .map_err(|e| internal_server_error("Submitting job to SLURM", e))?;
+            info!("SLURM job exited with status {}", status);
         }
     }
     Ok(NO_CONTENT)

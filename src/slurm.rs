@@ -1,32 +1,17 @@
-use std::borrow::Cow;
 use std::io;
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 
 use derive_more::{Display, From};
-use log::{debug, LevelFilter};
-use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
+use log::debug;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader, Lines};
+use tokio::process::{ChildStderr, ChildStdout, Command};
+use tokio::select;
 
 use crate::config::{Config, TargetId};
-use crate::util::{ExitError, OutputExt};
+use crate::util::ExitError;
 
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub struct JobId(pub u64);
-
-fn writeln_batch_opts(f: &mut impl io::Write, opts: &[String]) -> io::Result<()> {
-    if !opts.is_empty() {
-        write!(f, "#SBATCH")?;
-        for o in opts {
-            write!(f, " {}", sh_escape(o))?;
-        }
-        writeln!(f)?;
-    }
-    Ok(())
-}
-
-fn sh_escape<'s>(s: impl Into<Cow<'s, str>>) -> Cow<'s, str> {
-    shell_escape::unix::escape(s.into())
-}
 
 #[derive(Debug, Display, From)]
 pub enum SlurmError {
@@ -36,52 +21,92 @@ pub enum SlurmError {
     ChildProcess(ExitError),
 }
 
-impl SlurmError {
-    pub fn from_other(message: String) -> Self {
-        SlurmError::Io(io::Error::new(io::ErrorKind::Other, message))
+enum ChildStream {
+    Stdout,
+    Stderr,
+}
+
+struct ChildStreamMux {
+    stdout: Option<Lines<BufReader<ChildStdout>>>,
+    stderr: Option<Lines<BufReader<ChildStderr>>>,
+}
+
+async fn maybe_next_line<R>(stream: &mut Option<Lines<R>>) -> io::Result<Option<String>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    if let Some(s) = stream {
+        let line = s.next_line().await?;
+        if line.is_none() {
+            *stream = None;
+        }
+        Ok(line)
+    } else {
+        Ok(None)
     }
 }
 
-pub async fn batch_submit(config: &Config, target: &TargetId) -> Result<JobId, SlurmError> {
-    use std::io::Write;
-
-    let sh_job_name = sh_escape(&config.slurm.job_name);
-    let sh_target_id = sh_escape(&target.0);
-    let sh_executable = std::env::current_exe()?
-        .as_os_str()
-        .to_str()
-        .map(|slice| sh_escape(slice).into_owned())
-        .ok_or(SlurmError::from_other(
-            "process executable path is not in UTF-8".to_owned(),
-        ))?;
-
-    let mut script: Vec<u8> = Vec::new();
-    writeln!(script, "#!/bin/bash")?;
-    writeln_batch_opts(&mut script, &config.slurm.sbatch_options)?;
-    writeln_batch_opts(&mut script, &config.targets[target].sbatch_options)?;
-    writeln!(script, "#SBATCH -J {sh_job_name}-{sh_target_id}")?;
-    writeln!(script, "#SBATCH --parsable")?;
-    writeln!(script)?;
-    writeln!(script, "exec {sh_executable} runner {sh_target_id} $SLURM_JOB_ID")?;
-
-    let sbatch = config.slurm.sbatch.as_deref().unwrap_or("sbatch");
-    if log::max_level() >= LevelFilter::Debug {
-        debug!("Submtting to {sbatch}:\n{}", String::from_utf8_lossy(&script));
+impl ChildStreamMux {
+    fn new(stdout: Option<ChildStdout>, stderr: Option<ChildStderr>) -> Self {
+        ChildStreamMux {
+            stdout: stdout.map(|out| BufReader::new(out).lines()),
+            stderr: stderr.map(|err| BufReader::new(err).lines()),
+        }
     }
 
-    let mut child = Command::new(sbatch)
-        .stdin(Stdio::piped())
+    async fn next_line(&mut self) -> io::Result<Option<(ChildStream, String)>> {
+        loop {
+            let (stream, line) = match (&mut self.stdout, &mut self.stderr) {
+                (out @ Some(_), err @ Some(_)) => select! {
+                    o = maybe_next_line(out) => (ChildStream::Stdout, o?),
+                    e = maybe_next_line(err) => (ChildStream::Stderr, e?),
+                },
+                (out @ Some(_), None) => (ChildStream::Stdout, maybe_next_line(out).await?),
+                (None, err @ Some(_)) => (ChildStream::Stderr, maybe_next_line(err).await?),
+                (None, None) => return Ok(None),
+            };
+            if let Some(l) = line {
+                return Ok(Some((stream, l)));
+            }
+        }
+    }
+}
+
+pub async fn srun(config: &Config, target: &TargetId) -> Result<ExitStatus, SlurmError> {
+    let executable = std::env::current_exe()?
+        .as_os_str()
+        .to_string_lossy()
+        .into_owned();
+
+    let mut args = Vec::new();
+    args.extend_from_slice(&config.slurm.srun_options);
+    args.extend_from_slice(&config.targets[target].srun_options);
+    args.push("-J".to_string());
+    args.push(format!("{}-{}", &config.slurm.job_name, &target.0));
+    args.push("--parsable".to_owned());
+    args.push(executable);
+    args.push("runner".to_owned());
+    args.push(target.0.to_owned());
+
+    let srun = config.slurm.srun.as_deref().unwrap_or("srun");
+    debug!("Starting {srun} {}", args.join(" "));
+
+    let mut child = Command::new(srun)
+        .args(args)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    child.stdin.as_mut().unwrap().write(&script).await?;
-    let output = child.wait_with_output().await?.successful()?;
 
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|e| SlurmError::from_other(format!("cannot decode sbatch output: {e}")))?;
-    let job_id = stdout
-        .trim()
-        .parse()
-        .map_err(|e| SlurmError::from_other(format!("cannot parse sbatch output: {e}")))?;
-    Ok(JobId(job_id))
+    let mut output = ChildStreamMux::new(child.stdout.take(), child.stderr.take());
+    while let Some((stream, line)) = output.next_line().await? {
+        let label = match stream {
+            ChildStream::Stdout => "srun",
+            ChildStream::Stderr => "srun[err]",
+        };
+        debug!("{label}: {line}");
+    }
+
+    let status = child.wait().await?;
+    Ok(status)
 }
