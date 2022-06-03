@@ -14,7 +14,7 @@ pub struct SlurmConfig {
     pub job_name: String,
 }
 
-#[derive(Debug, Deserialize, Hash, PartialEq, Eq, From, FromStr)]
+#[derive(Debug, Deserialize, Hash, PartialEq, Eq, From, FromStr, Clone)]
 #[serde(transparent)]
 pub struct TargetId(pub String);
 

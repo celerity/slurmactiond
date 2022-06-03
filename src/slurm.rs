@@ -83,7 +83,6 @@ pub async fn srun(config: &Config, target: &TargetId) -> Result<ExitStatus, Slur
     args.extend_from_slice(&config.targets[target].srun_options);
     args.push("-J".to_string());
     args.push(format!("{}-{}", &config.slurm.job_name, &target.0));
-    args.push("--parsable".to_owned());
     args.push(executable);
     args.push("runner".to_owned());
     args.push(target.0.to_owned());
