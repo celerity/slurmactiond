@@ -12,7 +12,7 @@ use serde::Deserialize;
 
 use crate::Config;
 use crate::config::TargetId;
-use crate::slurm::srun;
+use crate::slurm;
 
 type StaticContent = (&'static str, StatusCode);
 type StaticResult = actix_web::Result<StaticContent>;
@@ -84,20 +84,22 @@ fn match_target<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c TargetI
     }
 }
 
-async fn workflow_job_event(config: web::Data<Config>, payload: &WorkflowJobPayload) -> StaticResult {
+async fn workflow_job_event(config: &Config, payload: &WorkflowJobPayload) -> StaticResult {
     if payload.action == WorkflowStatus::Queued {
-        if let Some(target) = match_target(config.as_ref(), &payload.workflow_job) {
+        if let Some(target) = match_target(&config, &payload.workflow_job) {
             info!(
                 "executing SLURM job for runner job {} of workflow {} ({})",
                 payload.workflow_job.job_id,
                 payload.workflow_job.workflow_id,
                 payload.workflow_job.name
             );
-            let target = (*target).clone();
+            let mut job = slurm::Job::spawn(&config, target)
+                .await
+                .map_err(|e| internal_server_error("Submitting job to SLURM", e))?;
             actix_web::rt::spawn(async move {
-                match srun(config.as_ref(), &target).await {
+                match job.join().await {
                     Ok(status) => info!("SLURM job exited with status {}", status),
-                    Err(e) => error!("Submitting job to SLURM: {e}"),
+                    Err(e) => error!("Running SLURM job: {e}"),
                 }
             });
         }
@@ -189,7 +191,7 @@ async fn webhook_event(
     match event.0 {
         GithubEvent::WorkflowJob => {
             let p = serde_json::from_slice(&payload).map_err(|e| BadRequest(format!("{e}")))?;
-            workflow_job_event(config, &p).await?;
+            workflow_job_event(config.as_ref(), &p).await?;
             Ok(NO_CONTENT)
         }
         GithubEvent::Other => Ok(NO_CONTENT),

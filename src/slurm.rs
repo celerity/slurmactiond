@@ -4,17 +4,14 @@ use std::process::{ExitStatus, Stdio};
 use derive_more::{Display, From};
 use log::debug;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader, Lines};
-use tokio::process::{ChildStderr, ChildStdout, Command};
+use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::select;
 
 use crate::config::{Config, TargetId};
 use crate::util::ExitError;
 
-#[derive(Debug, Hash, PartialEq, Eq)]
-pub struct JobId(pub u64);
-
 #[derive(Debug, Display, From)]
-pub enum SlurmError {
+pub enum Error {
     #[display(fmt = "{}", _0)]
     Io(io::Error),
     #[display(fmt = "{}", _0)]
@@ -72,40 +69,49 @@ impl ChildStreamMux {
     }
 }
 
-pub async fn srun(config: &Config, target: &TargetId) -> Result<ExitStatus, SlurmError> {
-    let executable = std::env::current_exe()?
-        .as_os_str()
-        .to_string_lossy()
-        .into_owned();
+pub struct Job(Child);
 
-    let mut args = Vec::new();
-    args.extend_from_slice(&config.slurm.srun_options);
-    args.extend_from_slice(&config.targets[target].srun_options);
-    args.push("-J".to_string());
-    args.push(format!("{}-{}", &config.slurm.job_name, &target.0));
-    args.push(executable);
-    args.push("runner".to_owned());
-    args.push(target.0.to_owned());
+impl Job {
+    pub async fn spawn(config: &Config, target: &TargetId) -> Result<Job, Error> {
+        let executable = std::env::current_exe()?
+            .as_os_str()
+            .to_string_lossy()
+            .into_owned();
 
-    let srun = config.slurm.srun.as_deref().unwrap_or("srun");
-    debug!("Starting {srun} {}", args.join(" "));
+        let mut args = Vec::new();
+        args.extend_from_slice(&config.slurm.srun_options);
+        args.extend_from_slice(&config.targets[target].srun_options);
+        args.push("-J".to_string());
+        args.push(format!("{}-{}", &config.slurm.job_name, &target.0));
+        args.push(executable);
+        args.push("runner".to_owned());
+        args.push(target.0.to_owned());
 
-    let mut child = Command::new(srun)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        let srun = config.slurm.srun.as_deref().unwrap_or("srun");
+        debug!("Starting {srun} {}", args.join(" "));
 
-    let mut output = ChildStreamMux::new(child.stdout.take(), child.stderr.take());
-    while let Some((stream, line)) = output.next_line().await? {
-        let label = match stream {
-            ChildStream::Stdout => "srun",
-            ChildStream::Stderr => "srun[err]",
-        };
-        debug!("{label}: {line}");
+        let child = Command::new(srun)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+        Ok(Job(child))
     }
 
-    let status = child.wait().await?;
-    Ok(status)
+    pub async fn join(&mut self) -> Result<ExitStatus, Error> {
+        let Job(child) = self;
+        let mut output = ChildStreamMux::new(child.stdout.take(), child.stderr.take());
+        while let Some((stream, line)) = output.next_line().await? {
+            let label = match stream {
+                ChildStream::Stdout => "srun",
+                ChildStream::Stderr => "srun[err]",
+            };
+            debug!("{label}: {line}");
+        }
+
+        let status = child.wait().await?;
+        Ok(status)
+    }
 }
