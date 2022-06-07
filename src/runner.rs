@@ -2,15 +2,15 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use derive_more::{Display, From};
 use log::{debug, error, info, warn};
+use tokio::process::Command;
 
-use crate::{Config, github};
 use crate::config::TargetId;
 use crate::github::DownloadError;
-use crate::util::{ExitError, OutputExt};
+use crate::util::{run_and_log_output, ExitError, ExitStatusExt};
+use crate::{github, Config};
 
 const LOCK_FILE_NAME: &str = ".lock";
 
@@ -128,11 +128,14 @@ pub async fn run(cfg: Config, target: TargetId, runner_seq: u64) -> Result<(), R
         update_runner_tarball(&tarball.url, &tarball_path, tarball.size).await?;
 
         debug!("Unpacking runner tarball {}", tarball_path.display());
-        Command::new("tar")
-            .current_dir(&work_dir.0)
-            .args(&[OsStr::new("xfz"), tarball_path.as_os_str()])
-            .output()?
-            .successful()?;
+        run_and_log_output(
+            "tar",
+            Command::new("tar")
+                .current_dir(&work_dir.0)
+                .args(&[OsStr::new("xfz"), tarball_path.as_os_str()]),
+        )
+        .await?
+        .successful()?;
     }
 
     info!(
@@ -148,9 +151,9 @@ pub async fn run(cfg: Config, target: TargetId, runner_seq: u64) -> Result<(), R
         cfg.runner.registration.name, target.0, runner_seq
     );
     info!("Registering runner {runner_name}");
-    let config_output = Command::new("./config.sh")
-        .current_dir(&work_dir.0)
-        .args(&[
+    run_and_log_output(
+        "config.sh",
+        Command::new("./config.sh").current_dir(&work_dir.0).args(&[
             "--unattended",
             "--url",
             &format!("https://github.com/{}", cfg.github.entity),
@@ -161,20 +164,15 @@ pub async fn run(cfg: Config, target: TargetId, runner_seq: u64) -> Result<(), R
             "--labels",
             &all_labels.join(","),
             "--ephemeral",
-        ])
-        .output()?
-        .successful()?;
-    debug!(
-        "./config.sh output:\n{}",
-        String::from_utf8_lossy(&config_output.stdout)
-    );
+        ]),
+    )
+    .await?
+    .successful()?;
 
     info!("Starting runner {runner_name}");
-    let run_output = Command::new("./run.sh")
-        .current_dir(&work_dir.0)
-        .output()?
+    run_and_log_output("run.sh", Command::new("./run.sh").current_dir(&work_dir.0))
+        .await?
         .successful()?;
-    debug!("./run.sh output:\n{}", String::from_utf8_lossy(&run_output.stdout));
 
     info!("Runner has exited normally");
     Ok(())

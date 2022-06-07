@@ -2,13 +2,34 @@ use std::io;
 use std::process::{ExitStatus, Stdio};
 
 use derive_more::{Display, From};
-use log::debug;
-use tokio::io::BufReader;
+use lazy_static::lazy_static;
+use log::{debug, warn};
 use tokio::process::{Child, Command};
+use serde::{Serialize, Deserialize};
 
 use crate::config::{Config, TargetId};
 use crate::json_log;
-use crate::util::ExitError;
+use crate::util::{ExitError, ChildStream, ChildStreamMux};
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Display, Serialize, Deserialize)]
+#[display(fmt = "{}", _0)]
+#[serde(transparent)]
+pub struct JobId(pub u64);
+
+const JOB_ID_VAR: &str = "SLURM_JOB_ID";
+
+lazy_static! {
+    pub static ref CURRENT_JOB_ID: Option<JobId> = {
+        match std::env::vars().find(|(k, _)| k == JOB_ID_VAR) {
+            Some((_, v)) => match v.parse() {
+                Ok(id) => return Some(JobId(id)),
+                Err(e) => warn!("Could not parse {JOB_ID_VAR}: {e}"),
+            },
+            None => warn!("Environment variable {JOB_ID_VAR} not set"),
+        }
+        None
+    };
+}
 
 #[derive(Debug, Display, From)]
 pub enum Error {
@@ -52,21 +73,20 @@ impl RunnerJob {
             .kill_on_drop(true)
             .spawn()?;
 
-        Ok(RunnerJob{name, child})
+        Ok(RunnerJob { name, child })
     }
 
-    pub async fn join(self) -> Result<ExitStatus, Error> {
-        use tokio::io::AsyncBufReadExt;
+    pub async fn join(self) -> io::Result<ExitStatus> {
+        let RunnerJob { name, mut child } = self;
 
-        let RunnerJob{name, mut child} = self;
-
-        let stdout = child.stdout.take().unwrap();
-        let mut lines = BufReader::new(stdout).lines();
-        while let Some(line) = lines.next_line().await? {
-            json_log::parse_and_log(&name, &line);
+        let mut output = ChildStreamMux::new(child.stdout.take(), child.stderr.take());
+        while let Some((stream, line)) = output.next_line().await? {
+            match stream {
+                ChildStream::Stdout => json_log::parse_and_log(&name, &line),
+                ChildStream::Stderr => warn!("{}", line),
+            }
         }
 
-        let status = child.wait().await?;
-        Ok(status)
+        child.wait().await
     }
 }

@@ -1190,6 +1190,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
+ "lazy_static",
  "log",
  "regex",
  "serde",

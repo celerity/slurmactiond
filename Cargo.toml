@@ -19,6 +19,7 @@ hex = "0.4" # for decoding SHA256 signatures
 futures-util = "0.3" # dependency of awc required for traversing streams
 tokio = { version = "1.18", features = ["process", "macros"] } # for async IPC
 clap = { version = "3", features = ["derive"] } # argument parsing
+lazy_static = "1"
 
 [profile.release]
 opt-level = "s"
