@@ -93,7 +93,7 @@ async fn workflow_job_event(config: &Config, payload: &WorkflowJobPayload) -> St
                 payload.workflow_job.workflow_id,
                 payload.workflow_job.name
             );
-            let mut job = slurm::Job::spawn(&config, target)
+            let job = slurm::RunnerJob::spawn(&config, target)
                 .await
                 .map_err(|e| internal_server_error("Submitting job to SLURM", e))?;
             actix_web::rt::spawn(async move {
