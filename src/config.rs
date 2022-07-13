@@ -7,6 +7,7 @@ use serde::Deserialize;
 use crate::github;
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SlurmConfig {
     pub srun: Option<String>,
     #[serde(default)]
@@ -19,6 +20,7 @@ pub struct SlurmConfig {
 pub struct TargetId(pub String);
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TargetConfig {
     pub runner_labels: Vec<String>,
     #[serde(default)]
@@ -26,12 +28,14 @@ pub struct TargetConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GithubConfig {
     pub entity: github::Entity,
     pub api_token: github::ApiToken,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunnerRegistrationConfig {
     pub name: String,
     #[serde(default)]
@@ -39,6 +43,7 @@ pub struct RunnerRegistrationConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunnerConfig {
     pub platform: String,
     pub work_dir: PathBuf,
@@ -46,12 +51,14 @@ pub struct RunnerConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HttpConfig {
     pub bind: String,
     pub secret: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub http: HttpConfig,
     pub github: GithubConfig,
