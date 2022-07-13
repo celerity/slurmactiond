@@ -1200,6 +1200,7 @@ name = "slurmactiond"
 version = "0.1.0"
 dependencies = [
  "actix-web",
+ "atty",
  "awc",
  "clap",
  "derive_more",

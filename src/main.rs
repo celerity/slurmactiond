@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use atty::Stream;
 use clap::{Parser, Subcommand};
 use log::error;
 
@@ -28,11 +29,22 @@ fn configure_logger(cmd: &Command) {
 
     let env = Env::default().default_filter_or("info");
     let mut builder = Builder::from_env(env);
-    builder.filter_module("h2", LevelFilter::Info);
-    if let Command::Runner { .. } = cmd {
-        builder.format(json_log::format);
-        builder.target(Stdout);
+
+    match cmd {
+        Command::Runner { .. } => {
+            builder.format(json_log::format);
+            builder.target(Stdout);
+        },
+        Command::Server => {
+            builder.format_target(log::max_level() >= log::Level::Debug);
+            if !atty::is(Stream::Stdout) && !atty::is(Stream::Stderr) {
+                // probably running as a service to systemd, which does its own timestamps
+                builder.format_timestamp(None);
+            }
+        },
     }
+
+    builder.filter_module("h2", LevelFilter::Info);
     builder.init();
 }
 

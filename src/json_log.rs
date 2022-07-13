@@ -24,7 +24,7 @@ pub fn format<W: Write>(w: &mut W, record: &Record) -> Result<()> {
 
 pub fn parse_and_log(tag: &str, line: &str) {
     match serde_json::from_str(line) {
-        Ok(Envelope{level, message, job: Some(job)}) => log!(level, "{job}: {message}"),
+        Ok(Envelope{level, message, job: Some(job)}) => log!(level, "SLURM #{job}: {message}"),
         Ok(Envelope{level, message, job: None}) => log!(level, "{message}"),
         Err(_) => warn!("{tag}: {line}"),
     }
