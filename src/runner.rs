@@ -113,7 +113,14 @@ pub async fn run(cfg: Config, target: TargetId, runner_seq: u64) -> Result<(), R
 
     let work_dir = WorkDir::lock(&cfg.runner.work_dir.join(&target.0))?;
     assert!(work_dir.0.join(LOCK_FILE_NAME).is_file());
-    info!("Using working directory {}", work_dir.0.display());
+
+    if log::max_level() >= log::Level::Info {
+        let host_name = hostname::get()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "(unknown hostname)".to_string());
+        let dir_name = work_dir.0.display();
+        info!("Running on {host_name} in {dir_name}");
+    }
 
     if work_dir.0.join("config.sh").is_file() {
         debug!("Re-using existing Github Actions Runner installation");
