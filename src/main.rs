@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use atty::Stream;
 use clap::{Parser, Subcommand};
@@ -54,15 +54,16 @@ fn configure_logger(cmd: &Command) {
 struct Arguments {
     #[clap(subcommand)]
     command: Option<Command>,
+    #[clap(short, long, value_parser, default_value = "slurmactiond.toml")]
+    config_file: PathBuf,
 }
 
-fn main_inner(cmd: Command) -> Result<(), String> {
-    let cfg_path = Path::new("config.toml");
-    let cfg = fs::read(cfg_path)
+fn main_inner(command: Command, config_file: &Path) -> Result<(), String> {
+    let cfg = fs::read(config_file)
         .and_then(|bytes| Ok(toml::from_slice(&bytes)?))
-        .map_err(|e| format!("Reading config file {p}: {e}", p = cfg_path.display()))?;
+        .map_err(|e| format!("Reading config file {p}: {e}", p = config_file.display()))?;
 
-    match cmd {
+    match command {
         Command::Server => {
             webhook::main(cfg).map_err(|e| format!("Serving webhook over HTTP: {e}"))
         }
@@ -79,11 +80,12 @@ fn main_inner(cmd: Command) -> Result<(), String> {
 }
 
 fn main() {
-    let cmd = Arguments::parse().command.unwrap_or(Command::Server);
+    let Arguments { command, config_file } = Arguments::parse();
+    let command = command.unwrap_or(Command::Server);
 
-    configure_logger(&cmd);
+    configure_logger(&command);
 
-    if let Err(e) = main_inner(cmd) {
+    if let Err(e) = main_inner(command, &config_file) {
         error!("{e}");
         std::process::exit(1);
     }

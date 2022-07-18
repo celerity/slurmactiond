@@ -70,6 +70,6 @@ pub struct Config {
 
 #[test]
 fn test_load_example_config() {
-    let toml_file = include_bytes!("../config.example.toml");
+    let toml_file = include_bytes!("../slurmactiond.example.toml");
     toml::from_slice::<Config>(toml_file).unwrap();
 }
