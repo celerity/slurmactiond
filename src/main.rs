@@ -32,7 +32,8 @@ fn configure_logger(cmd: &Command) {
 
     match cmd {
         Command::Runner { .. } => {
-            builder.format(json_log::format);
+            let formatter = json_log::Formatter::new();
+            builder.format(move |f, r| formatter.format(f, r));
             builder.target(Stdout);
         },
         Command::Server => {
@@ -68,13 +69,8 @@ fn main_inner(command: Command, config_file: &Path) -> Result<(), String> {
             webhook::main(cfg).map_err(|e| format!("Serving webhook over HTTP: {e}"))
         }
         Command::Runner { target } => {
-            let seq = std::env::vars()
-                .find(|(k, _)| k == "SLURM_JOB_ID")
-                .ok_or_else(|| "Environment variable SLURM_JOB_ID not set".to_owned())?
-                .1
-                .parse()
-                .map_err(|e| format!("Could not parse SLURM_JOB_ID: {e}"))?;
-            runner::run(cfg, target, seq).map_err(|e| format!("Starting runner: {e}"))
+            let job_id = slurm::current_job_id().map_err(|e| e.to_string())?;
+            runner::run(cfg, target, job_id.0).map_err(|e| format!("Starting runner: {e}"))
         }
     }
 }

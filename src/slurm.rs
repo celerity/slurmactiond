@@ -1,8 +1,8 @@
 use std::io;
+use std::num::ParseIntError;
 use std::process::{ExitStatus, Stdio};
 
 use derive_more::{Display, From};
-use lazy_static::lazy_static;
 use log::{debug, warn};
 use tokio::process::{Child, Command};
 use serde::{Serialize, Deserialize};
@@ -11,6 +11,7 @@ use crate::config::{Config, TargetId};
 use crate::json_log;
 use crate::util::{ExitError, ChildStream, ChildStreamMux};
 
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Display, Serialize, Deserialize)]
 #[display(fmt = "{}", _0)]
 #[serde(transparent)]
@@ -18,18 +19,27 @@ pub struct JobId(pub u64);
 
 const JOB_ID_VAR: &str = "SLURM_JOB_ID";
 
-lazy_static! {
-    pub static ref CURRENT_JOB_ID: Option<JobId> = {
-        match std::env::vars().find(|(k, _)| k == JOB_ID_VAR) {
-            Some((_, v)) => match v.parse() {
-                Ok(id) => return Some(JobId(id)),
-                Err(e) => warn!("Could not parse {JOB_ID_VAR}: {e}"),
-            },
-            None => warn!("Environment variable {JOB_ID_VAR} not set"),
-        }
-        None
-    };
+#[derive(Debug, Display)]
+pub enum JobIdReadError {
+    #[display(fmt = "Environment variable {JOB_ID_VAR} not set")]
+    Unset,
+    #[display(fmt = "Could not parse {JOB_ID_VAR}: {}", _0)]
+    Parse(ParseIntError),
 }
+
+pub fn current_job_id() -> Result<JobId, JobIdReadError> {
+    let id_string = std::env::vars()
+        .find(|(k, _)| k == JOB_ID_VAR)
+        .ok_or(JobIdReadError::Unset)?
+        .1;
+    let id_int = id_string
+        .parse()
+        .map_err(|e| JobIdReadError::Parse(e))?;
+    Ok(JobId(id_int))
+}
+
+impl std::error::Error for JobIdReadError {}
+
 
 #[derive(Debug, Display, From)]
 pub enum Error {
