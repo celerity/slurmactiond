@@ -1,3 +1,5 @@
+extern crate core;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,6 +12,7 @@ use config::Config;
 use crate::config::TargetId;
 
 mod config;
+mod file_io;
 mod github;
 mod runner;
 mod slurm;
@@ -69,8 +72,8 @@ fn main_inner(command: Command, config_file: &Path) -> Result<(), String> {
             webhook::main(cfg).map_err(|e| format!("Serving webhook over HTTP: {e}"))
         }
         Command::Runner { target } => {
-            let job_id = slurm::current_job_id().map_err(|e| e.to_string())?;
-            runner::run(cfg, target, job_id.0).map_err(|e| format!("Starting runner: {e}"))
+            let job_id = slurm::current_job().map_err(|e| e.to_string())?;
+            runner::run(cfg, target, job_id).map_err(|e| format!("Starting runner: {e}"))
         }
     }
 }

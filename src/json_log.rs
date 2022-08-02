@@ -20,7 +20,7 @@ impl Formatter {
         Formatter{
             // Can't log here in case current_job_id() fails because we're in the process of
             // setting up the logger!
-            job: slurm::current_job_id().ok()
+            job: slurm::current_job().ok()
         }
     }
 

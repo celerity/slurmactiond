@@ -10,6 +10,7 @@ use crate::github;
 #[serde(deny_unknown_fields)]
 pub struct SlurmConfig {
     pub srun: Option<String>,
+    pub squeue: Option<String>,
     #[serde(default)]
     pub srun_options: Vec<String>,
     pub job_name: String,

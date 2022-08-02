@@ -2,17 +2,16 @@ use std::io;
 use std::num::ParseIntError;
 use std::process::{ExitStatus, Stdio};
 
-use derive_more::{Display, From};
+use derive_more::{Display, From, FromStr};
 use log::{debug, warn};
+use serde::{Deserialize, Serialize};
 use tokio::process::{Child, Command};
-use serde::{Serialize, Deserialize};
 
 use crate::config::{Config, TargetId};
 use crate::json_log;
-use crate::util::{ExitError, ChildStream, ChildStreamMux};
+use crate::util::{self, ChildStream, ChildStreamMux, ExitError, OutputExt};
 
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Display, Serialize, Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Display, Debug, Serialize, Deserialize, FromStr)]
 #[display(fmt = "{}", _0)]
 #[serde(transparent)]
 pub struct JobId(pub u64);
@@ -27,19 +26,16 @@ pub enum JobIdReadError {
     Parse(ParseIntError),
 }
 
-pub fn current_job_id() -> Result<JobId, JobIdReadError> {
+pub fn current_job() -> Result<JobId, JobIdReadError> {
     let id_string = std::env::vars()
         .find(|(k, _)| k == JOB_ID_VAR)
         .ok_or(JobIdReadError::Unset)?
         .1;
-    let id_int = id_string
-        .parse()
-        .map_err(|e| JobIdReadError::Parse(e))?;
+    let id_int = id_string.parse().map_err(|e| JobIdReadError::Parse(e))?;
     Ok(JobId(id_int))
 }
 
 impl std::error::Error for JobIdReadError {}
-
 
 #[derive(Debug, Display, From)]
 pub enum Error {
@@ -47,6 +43,8 @@ pub enum Error {
     Io(io::Error),
     #[display(fmt = "{}", _0)]
     ChildProcess(ExitError),
+    #[display(fmt = "Cannot parse output: {}", _0)]
+    Parse(Box<dyn std::error::Error + Send + Sync>),
 }
 
 pub struct RunnerJob {
@@ -99,4 +97,36 @@ impl RunnerJob {
 
         child.wait().await
     }
+}
+
+pub async fn active_jobs(config: &Config) -> Result<Vec<JobId>, Error> {
+    let squeue = config.slurm.squeue.as_deref().unwrap_or("squeue");
+    let uid = util::getuid().to_string();
+    let output = Command::new(squeue)
+        .args(&[
+            "-h",
+            "-o",
+            "%A",
+            "-t",
+            "CF,CG,PD,R,SO,ST,S,SE,SI,RS,RQ,RF",
+            "-u",
+            &uid,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await?
+        .successful()?;
+    String::from_utf8(output.stdout)
+        .map_err(|e| Error::Parse(Box::new(e)))?
+        .lines()
+        .map(|l| l.parse().map_err(|e| Error::Parse(Box::new(e))))
+        .collect()
+}
+
+pub fn job_has_terminated(job: JobId, active_jobs: &[JobId]) -> bool {
+    // this test races with the enqueueing of new jobs, so we have to conservatively assume that
+    // a job newer than all active jobs has not terminated yet.
+    !active_jobs.contains(&job) && active_jobs.iter().any(|a| a.0 > job.0)
 }

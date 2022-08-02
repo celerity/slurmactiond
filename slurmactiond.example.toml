@@ -8,6 +8,7 @@ api_token = "ghp_5Hx6y27fF10fjF01jfJpQrtT915931520A"
 
 [slurm]
 #srun = "/usr/bin/srun"
+#squeue = "/usr/bin/squeue"
 srun_options = ["-t", "1:00:00"]
 job_name = "action-runner"
 

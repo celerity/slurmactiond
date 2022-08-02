@@ -21,6 +21,10 @@ tokio = { version = "1.18", features = ["process", "macros"] } # for async IPC
 clap = { version = "3", features = ["derive"] } # argument parsing
 hostname = "^0.3" # for logging the hostname from a SLURM job
 atty = "^0.2" # for stripping timestamps and auxilary information when logging to systemd
+libc = "0.2" # for getuid()
+
+[dev-dependencies]
+tempfile = "3" # for testing file_io
 
 [profile.release]
 opt-level = "s"

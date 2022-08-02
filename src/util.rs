@@ -124,3 +124,7 @@ pub async fn run_and_log_output(tag: &str, command: &mut Command) -> io::Result<
     }
     child.wait().await
 }
+
+pub fn getuid() -> libc::uid_t {
+    unsafe { libc::getuid() }
+}

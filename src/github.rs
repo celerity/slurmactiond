@@ -190,6 +190,5 @@ fn test_entity_from_string() {
 
 #[test]
 fn test_locate_runner_tarball() {
-    let tarball = actix_web::rt::System::new().block_on(locate_runner_tarball("linux-x64"));
-    assert!(tarball.is_ok());
+    actix_web::rt::System::new().block_on(locate_runner_tarball("linux-x64")).unwrap();
 }
