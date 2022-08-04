@@ -3,7 +3,7 @@ use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::process::{ExitStatus, Output, Stdio};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader, Lines};
-use tokio::process::{ChildStderr, ChildStdout, Command};
+use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::select;
 
 #[derive(Debug)]
@@ -58,6 +58,7 @@ impl ExitStatusExt for ExitStatus {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum ChildStream {
     Stdout,
     Stderr,
@@ -109,20 +110,41 @@ impl ChildStreamMux {
     }
 }
 
-pub async fn run_and_log_output(tag: &str, command: &mut Command) -> io::Result<ExitStatus> {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut output = ChildStreamMux::new(child.stdout.take(), child.stderr.take());
-    while let Some((stream, line)) = output.next_line().await? {
-        match stream {
-            ChildStream::Stdout => debug!("{tag}: {line}"),
-            ChildStream::Stderr => warn!("{tag}: {line}"),
-        }
+pub struct ChildOutputStream {
+    pub child: Child,
+    pub output_stream: ChildStreamMux,
+}
+
+pub fn log_child_output(stream: ChildStream, tag: &str, line: &str) {
+    match stream {
+        ChildStream::Stdout => debug!("{tag}: {line}"),
+        ChildStream::Stderr => warn!("{tag}: {line}"),
     }
-    child.wait().await
+}
+
+impl ChildOutputStream {
+    pub async fn log_output(mut self, tag: &'static str) -> io::Result<ExitStatus> {
+        while let Some((stream, line)) = self.output_stream.next_line().await? {
+            log_child_output(stream, tag, &line);
+        }
+        self.child.wait().await
+    }
+}
+
+pub trait CommandOutputStreamExt {
+    fn output_stream(&mut self) -> io::Result<ChildOutputStream>;
+}
+
+impl CommandOutputStreamExt for Command {
+    fn output_stream(&mut self) -> io::Result<ChildOutputStream> {
+        let mut child = self
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let output_stream = ChildStreamMux::new(child.stdout.take(), child.stderr.take());
+        Ok(ChildOutputStream { child, output_stream })
+    }
 }
 
 pub fn getuid() -> libc::uid_t {
