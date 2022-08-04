@@ -10,14 +10,13 @@ use tokio::process::Command;
 
 use crate::config::TargetId;
 use crate::file_io::{FileIoError, WorkDir};
-use crate::github::DownloadError;
 use crate::util::{run_and_log_output, ExitError, ExitStatusExt};
 use crate::{github, slurm, Config};
 
 async fn find_or_download_runner_tarball(
     url: &str,
     tarball_path: &Path,
-) -> Result<(), DownloadError> {
+) -> Result<(), github::DownloadError> {
     match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -33,7 +32,7 @@ async fn find_or_download_runner_tarball(
         }
         Err(e) => {
             error!("Unable to download {url}: {e}");
-            Err(DownloadError::Io(e))
+            Err(github::DownloadError::Io(e))
         }
     }
 }
@@ -42,7 +41,7 @@ async fn update_runner_tarball(
     url: &str,
     tarball_path: &Path,
     expected_size: u64,
-) -> Result<(), DownloadError> {
+) -> Result<(), github::DownloadError> {
     const RETRIES: u32 = 3;
     for _ in 0..RETRIES {
         find_or_download_runner_tarball(url, tarball_path).await?;
@@ -54,7 +53,7 @@ async fn update_runner_tarball(
             // continue
         }
     }
-    Err(DownloadError::TooManyRetries)
+    Err(github::DownloadError::TooManyRetries)
 }
 
 #[derive(Debug, Display, From)]
@@ -122,6 +121,19 @@ pub async fn run(cfg: Config, target: TargetId, job: slurm::JobId) -> Result<(),
     let registration_token =
         github::generate_runner_registration_token(&cfg.github.entity, &cfg.github.api_token)
             .await?;
+
+    // there might be a left-over runner registration from a task that didn't exit successfully,
+    // try unregistering it
+    run_and_log_output(
+        "config.sh",
+        Command::new("./config.sh")
+            .current_dir(&work_dir.path)
+            .args(&["remove", "--token", &registration_token.0]),
+    )
+    .await
+    .map_err(|e| FileIoError::new("unregistering previous runner", "config.sh", e))
+    // since this is a cleanup task, we don't require a zero exit code
+    ?;
 
     let runner_name = format!("{}-{}-{}", cfg.runner.registration.name, target.0, job);
     info!("Registering runner {runner_name}");
