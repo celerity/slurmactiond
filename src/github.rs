@@ -1,10 +1,9 @@
 use std::future::Future;
 use std::io;
 
-use awc::{Client, http::header, SendClientRequest};
 use awc::error::{HeaderValue, JsonPayloadError, PayloadError, SendRequestError};
 use awc::http::{Method, StatusCode};
-use awc::http::header::HeaderName;
+use awc::{http::header, Client, SendClientRequest};
 use derive_more::{Display, From};
 use log::debug;
 use regex::Regex;
@@ -81,20 +80,22 @@ type ClientResponse = <<SendClientRequest as Future>::Output as ResultType>::Pay
 async fn api_request(
     method: Method,
     url: String,
-    headers: &[(HeaderName, HeaderValue)],
+    api_token: &ApiToken,
 ) -> Result<ClientResponse, ApiError> {
     debug!("Sending GitHub API request {method} {url}");
-    let mut request = Client::new()
+    let header_token = HeaderValue::try_from(format!("Token {api_token}"))
+        .expect("Invalid bytes in GitHub API token");
+    let response = Client::new()
         .request(method, url)
         .append_header((header::ACCEPT, "application/vnd.github.v3+json"))
-        .append_header((header::USER_AGENT, USER_AGENT));
-    for (name, value) in headers.into_iter() {
-        request.headers_mut().append(name.clone(), value.clone());
-    }
-    let mut response = request.send().await?;
+        .append_header((header::USER_AGENT, USER_AGENT))
+        .append_header((header::AUTHORIZATION, header_token))
+        .send()
+        .await?;
     if response.status().is_success() {
         Ok(response)
     } else {
+        let mut response = response;
         let body = response
             .body()
             .await
@@ -112,10 +113,7 @@ pub async fn generate_runner_registration_token(
         Entity::Organization(org) => format!("{GITHUB}/orgs/{org}/{RUNNER_TOKEN}"),
         Entity::Repository(org, repo) => format!("{GITHUB}/repos/{org}/{repo}/{RUNNER_TOKEN}"),
     };
-    let header_token = HeaderValue::try_from(format!("Token {api_token}"))
-        .expect("Invalid bytes in GitHub API token");
-    let headers = [(header::AUTHORIZATION, header_token)];
-    let response = api_request(Method::POST, endpoint, &headers).await?;
+    let response = api_request(Method::POST, endpoint, api_token).await?;
     let payload: TokenPayload = { response }.json().await?;
     Ok(payload.token)
 }
@@ -133,9 +131,12 @@ struct ReleasesPayload {
     assets: Vec<Asset>,
 }
 
-pub async fn locate_runner_tarball(platform: &str) -> Result<Asset, ApiError> {
+pub async fn locate_runner_tarball(
+    platform: &str,
+    api_token: &ApiToken,
+) -> Result<Asset, ApiError> {
     let endpoint = format!("{GITHUB}/repos/actions/runner/releases/latest");
-    let response = api_request(Method::GET, endpoint, &[]).await?;
+    let response = api_request(Method::GET, endpoint, api_token).await?;
     let releases: ReleasesPayload = { response }.json().await?;
 
     let full_release_re = Regex::new(&format!(
@@ -190,5 +191,17 @@ fn test_entity_from_string() {
 
 #[test]
 fn test_locate_runner_tarball() {
-    actix_web::rt::System::new().block_on(locate_runner_tarball("linux-x64")).unwrap();
+    match std::env::vars().find(|(k, _)| k == "GITHUB_API_TOKEN") {
+        Some((_, api_token_str)) => {
+            actix_web::rt::System::new()
+                .block_on(locate_runner_tarball(
+                    "linux-x64",
+                    &ApiToken(api_token_str.to_owned()),
+                ))
+                .unwrap();
+        }
+        None => {
+            eprintln!("warning: GITHUB_API_TOKEN not set, skipping GitHub API tests");
+        }
+    }
 }

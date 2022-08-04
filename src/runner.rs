@@ -94,7 +94,8 @@ pub async fn run(cfg: Config, target: TargetId, job: slurm::JobId) -> Result<(),
         debug!("Re-using existing Github Actions Runner installation");
     } else {
         info!("Installing Github Actions Runner");
-        let tarball = github::locate_runner_tarball(&cfg.runner.platform).await?;
+        let tarball =
+            github::locate_runner_tarball(&cfg.runner.platform, &cfg.github.api_token).await?;
         debug!(
             "Downloading latest release for {} from {}",
             cfg.runner.platform, tarball.name
