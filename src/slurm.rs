@@ -75,6 +75,8 @@ impl RunnerJob {
 
         let child = Command::new(srun)
             .args(args)
+            .envs(config.slurm.srun_env.iter())
+            .envs(config.targets[target].srun_env.iter())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

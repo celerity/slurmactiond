@@ -10,6 +10,7 @@ api_token = "ghp_5Hx6y27fF10fjF01jfJpQrtT915931520A"
 #srun = "/usr/bin/srun"
 #squeue = "/usr/bin/squeue"
 srun_options = ["-t", "1:00:00"]
+srun_env = { DEFAULT_OPTION = "ALL" }
 job_name = "action-runner"
 
 [action_runner]
@@ -27,3 +28,4 @@ srun_options = ["-p", "gpu"]
 [targets.intel]
 runner_labels = ["gpu", "db-app", "intel"]
 srun_options = ["-p", "intel"]
+srun_env = { RUNNER_OPTION = "VALUE" }

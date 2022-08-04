@@ -1,6 +1,6 @@
+use derive_more::{From, FromStr};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use derive_more::{From, FromStr};
 
 use serde::Deserialize;
 
@@ -13,6 +13,8 @@ pub struct SlurmConfig {
     pub squeue: Option<String>,
     #[serde(default)]
     pub srun_options: Vec<String>,
+    #[serde(default)]
+    pub srun_env: HashMap<String, String>,
     pub job_name: String,
 }
 
@@ -26,6 +28,8 @@ pub struct TargetConfig {
     pub runner_labels: Vec<String>,
     #[serde(default)]
     pub srun_options: Vec<String>,
+    #[serde(default)]
+    pub srun_env: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,7 +70,8 @@ pub struct Config {
     pub slurm: SlurmConfig,
     #[serde(rename = "action_runner")]
     pub runner: RunnerConfig,
-    #[serde(default)] pub targets: HashMap<TargetId, TargetConfig>,
+    #[serde(default)]
+    pub targets: HashMap<TargetId, TargetConfig>,
 }
 
 #[test]
