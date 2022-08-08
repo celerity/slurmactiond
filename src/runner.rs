@@ -6,14 +6,15 @@ use std::process::ExitStatus;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use tokio::process::Command;
 
 use crate::config::TargetId;
 use crate::file_io::WorkDir;
 use crate::github::RunnerRegistrationToken;
 use crate::util::{
-    log_child_output, ChildStream, CommandOutputStreamExt as _, ResultSuccessExt as _,
+    async_retry_after, log_child_output, ChildStream, CommandOutputStreamExt as _,
+    ResultSuccessExt as _,
 };
 use crate::{github, slurm, Config};
 
@@ -40,25 +41,20 @@ async fn update_runner_tarball(
     tarball_path: &Path,
     expected_size: u64,
 ) -> anyhow::Result<()> {
-    const RETRIES: u32 = 3;
-    for _ in 0..RETRIES {
-        find_or_download_runner_tarball(url, tarball_path)
-            .await
-            .with_context(|| format!("Failed to update runner tarball from {url}"))?;
-        if tarball_path.metadata()?.len() == expected_size {
-            return Ok(());
-        } else {
-            warn!("{} does not have the expected size", tarball_path.display());
-            fs::remove_file(tarball_path).with_context(|| {
-                format!(
-                    "Error removing outdated or corrupted tarball {}",
-                    tarball_path.display()
-                )
-            })?;
-            // continue
-        }
+    find_or_download_runner_tarball(url, tarball_path)
+        .await
+        .with_context(|| format!("Failed to update runner tarball from {url}"))?;
+    if tarball_path.metadata()?.len() == expected_size {
+        Ok(())
+    } else {
+        warn!("{} does not have the expected size", tarball_path.display());
+        fs::remove_file(tarball_path).with_context(|| {
+            format!(
+                "Error removing outdated or corrupted tarball {}",
+                tarball_path.display()
+            )
+        })
     }
-    anyhow::bail!("Too many retries")
 }
 
 async fn register_instance(
@@ -120,44 +116,34 @@ async fn kill_and_wait_child(child: &mut tokio::process::Child) -> anyhow::Resul
 
 async fn run_instance(work_path: &Path) -> anyhow::Result<()> {
     const LISTEN_TIMEOUT: Duration = Duration::from_secs(30);
-    const NUM_RETRIES: u32 = 4;
 
-    let mut retry: u32 = 0;
+    let mut run = Command::new("./run.sh")
+        .current_dir(work_path)
+        .output_stream()?;
+
     loop {
-        let mut run = Command::new("./run.sh")
-            .current_dir(work_path)
-            .output_stream()?;
-        loop {
-            match tokio::time::timeout(LISTEN_TIMEOUT, run.output_stream.next_line()).await {
-                Ok(Ok(Some((stream, line)))) => {
-                    log_child_output(stream, "run.sh", &line);
-                    if stream == ChildStream::Stdout && line.contains(": Running job:") {
-                        return run
-                            .log_output("run.sh")
-                            .await
-                            .and_successful()
-                            .with_context(|| "Runner finished with non-zero exit code");
-                    }
+        // repeat as long as we get output lines, then block within one of the match arms
+        match tokio::time::timeout(LISTEN_TIMEOUT, run.output_stream.next_line()).await {
+            Ok(Ok(Some((stream, line)))) => {
+                log_child_output(stream, "run.sh", &line);
+                if stream == ChildStream::Stdout && line.contains(": Running job:") {
+                    return run
+                        .log_output("run.sh")
+                        .await
+                        .and_successful()
+                        .with_context(|| "Runner finished with non-zero exit code");
                 }
-                Ok(Ok(None)) => {
-                    wait_child(&mut run.child).await?;
-                    anyhow::bail!("runner exited without picking up a job");
-                }
-                Ok(Err(io_err)) => {
-                    kill_and_wait_child(&mut run.child).await?;
-                    return Err(From::from(io_err));
-                }
-                Err(elapsed) => {
-                    error!("runner timed out waiting for jobs");
-                    kill_and_wait_child(&mut run.child).await?;
-                    if retry < NUM_RETRIES - 1 {
-                        retry += 1;
-                        info!("Retrying ({retry}/{NUM_RETRIES})...");
-                    } else {
-                        return Err(elapsed)
-                            .with_context(|| "Too many retries launching GitHub Actions Runner");
-                    }
-                }
+            }
+            Ok(Ok(None)) => {
+                wait_child(&mut run.child).await?;
+                anyhow::bail!("Runner exited without picking up a job");
+            }
+            Ok(Err(io_err)) => {
+                kill_and_wait_child(&mut run.child).await?;
+                return Err(From::from(io_err));
+            }
+            Err(elapsed) => {
+                return Err(elapsed).with_context(|| "Runner timed out waiting for jobs");
             }
         }
     }
@@ -176,6 +162,11 @@ async fn unpack_tar_gz(tarball: &Path, into_dir: &Path) -> anyhow::Result<()> {
 
 #[actix_web::main]
 pub async fn run(cfg: Config, target: TargetId, job: slurm::JobId) -> anyhow::Result<()> {
+    const API_ATTEMPTS: u32 = 3;
+    const API_COOLDOWN: Duration = Duration::from_secs(30);
+    const LISTEN_ATTEMPTS: u32 = 5;
+    const LISTEN_COOLDOWN: Duration = Duration::from_secs(10);
+
     let base_labels = cfg.runner.registration.labels.iter().map(AsRef::as_ref);
     let target_labels = cfg.targets[&target].runner_labels.iter().map(AsRef::as_ref);
     let all_labels: Vec<&str> = base_labels.chain(target_labels).collect();
@@ -200,17 +191,22 @@ pub async fn run(cfg: Config, target: TargetId, job: slurm::JobId) -> anyhow::Re
         debug!("Re-using existing Github Actions Runner installation");
     } else {
         info!("Installing Github Actions Runner");
-        let tarball = github::locate_runner_tarball(&cfg.runner.platform, &cfg.github.api_token)
-            .await
-            .with_context(|| "Error locating latest GitHub Actions Runner release")?;
+        let tarball = async_retry_after(API_COOLDOWN, API_ATTEMPTS, || {
+            github::locate_runner_tarball(&cfg.runner.platform, &cfg.github.api_token)
+        })
+        .await
+        .with_context(|| "Error locating latest GitHub Actions Runner release")?;
+
         debug!(
             "Downloading latest release for {} from {}",
             cfg.runner.platform, tarball.name
         );
         let tarball_path = work_dir.path.join(tarball.name);
-        update_runner_tarball(&tarball.url, &tarball_path, tarball.size)
-            .await
-            .with_context(|| "Error downloading latest GitHub Actions Runner release")?;
+        async_retry_after(API_COOLDOWN, API_ATTEMPTS, || {
+            update_runner_tarball(&tarball.url, &tarball_path, tarball.size)
+        })
+        .await
+        .with_context(|| "Error downloading latest GitHub Actions Runner release")?;
 
         debug!("Unpacking runner tarball {}", tarball_path.display());
         unpack_tar_gz(&tarball_path, &work_dir.path)
@@ -222,33 +218,39 @@ pub async fn run(cfg: Config, target: TargetId, job: slurm::JobId) -> anyhow::Re
         "Generating runner registration token for {}",
         cfg.github.entity
     );
-    let registration_token =
+    let registration_token = async_retry_after(API_COOLDOWN, API_ATTEMPTS, || {
         github::generate_runner_registration_token(&cfg.github.entity, &cfg.github.api_token)
-            .await
-            .with_context(|| "Error generating GitHub Runner Registration Token")?;
+    })
+    .await
+    .with_context(|| "Error generating GitHub Runner Registration Token")?;
 
     // there might be a left-over runner registration from a task that didn't exit successfully,
-    // try unregistering it
+    // try unregistering it. This will not fail on a non-zero exit code since most of the time,
+    // there will be no registered runner present.
     unregister_instance(&work_dir.path, &registration_token)
         .await
         .with_context(|| "Error unregistering previous runner")?;
 
     let runner_name = format!("{}-{}-{}", cfg.runner.registration.name, target.0, job);
     info!("Registering runner {runner_name}");
-    register_instance(
-        &work_dir.path,
-        &cfg.github.entity,
-        &registration_token,
-        &runner_name,
-        &all_labels,
-    )
+    async_retry_after(API_COOLDOWN, API_ATTEMPTS, || {
+        register_instance(
+            &work_dir.path,
+            &cfg.github.entity,
+            &registration_token,
+            &runner_name,
+            &all_labels,
+        )
+    })
     .await
-    .with_context(|| "Configuring new Actions Runner")?;
+    .with_context(|| "Error configuring new Actions Runner")?;
 
     info!("Starting runner {runner_name}");
-    run_instance(&work_dir.path)
-        .await
-        .with_context(|| "Error while executing Actions Runner")?;
+    async_retry_after(LISTEN_COOLDOWN, LISTEN_ATTEMPTS, || {
+        run_instance(&work_dir.path)
+    })
+    .await
+    .with_context(|| "Error while executing Actions Runner")?;
 
     info!("Runner has exited normally");
     Ok(())

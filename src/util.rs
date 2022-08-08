@@ -1,7 +1,9 @@
-use log::{debug, warn};
+use log::{debug, error, info, warn};
 use std::fmt::{self, Display, Formatter};
+use std::future::Future;
 use std::io;
 use std::process::{ExitStatus, Output, Stdio};
+use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader, Lines};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
@@ -166,4 +168,33 @@ impl CommandOutputStreamExt for Command {
 
 pub fn getuid() -> libc::uid_t {
     unsafe { libc::getuid() }
+}
+
+pub async fn async_retry_after<F, T, E>(
+    delay: Duration,
+    max_attempts: u32,
+    mut f: impl FnMut() -> F,
+) -> Result<T, anyhow::Error>
+where
+    F: Future<Output = Result<T, E>>,
+    anyhow::Error: From<E>,
+    E: Display,
+{
+    let mut attempt = 0u32;
+    loop {
+        match f().await {
+            Ok(item) => return Ok(item),
+            Err(e) => {
+                error!("{}", e);
+                attempt += 1;
+                if attempt >= max_attempts {
+                    return Err(
+                        anyhow::Error::from(e).context("Giving up after {attempt} attempts")
+                    );
+                }
+            }
+        }
+        tokio::time::sleep(delay).await;
+        info!("Retrying ({}/{})", attempt, max_attempts - 1);
+    }
 }
