@@ -1,24 +1,34 @@
+use anyhow::Context as _;
+use std::fmt::{Display, Formatter};
 use std::future::Future;
 use std::io;
+use thiserror::Error;
 
-use awc::error::{HeaderValue, JsonPayloadError, PayloadError, SendRequestError};
-use awc::http::{Method, StatusCode};
+use awc::error::HeaderValue;
+use awc::http::Method;
 use awc::{http::header, Client, SendClientRequest};
-use derive_more::{Display, From};
 use log::debug;
 use regex::Regex;
 use serde::Deserialize;
 
-#[derive(Deserialize, Debug, Display, PartialEq, Eq)]
+#[derive(Deserialize, Debug, PartialEq, Eq)]
 #[serde(try_from = "&str")]
 pub enum Entity {
-    #[display(fmt = "{}", _0)]
     Organization(String),
-    #[display(fmt = "{}/{}", _0, _1)]
     Repository(String, String),
 }
 
-#[derive(Debug, Display, PartialEq, Eq)]
+impl Display for Entity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Entity::Organization(org) => write!(f, "{org}"),
+            Entity::Repository(org, repo) => write!(f, "{org}/{repo}"),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Error)]
+#[error("Invalid GitHub entity")]
 pub struct InvalidEntityError;
 
 impl TryFrom<&str> for Entity {
@@ -36,34 +46,24 @@ impl TryFrom<&str> for Entity {
     }
 }
 
-#[derive(Deserialize, Debug, Display, PartialEq, Eq)]
+#[derive(Deserialize, Debug, PartialEq, Eq)]
 #[serde(transparent)]
-#[display(fmt = "{}", _0)]
 pub struct ApiToken(pub String);
 
-#[derive(Deserialize, Debug, Display, PartialEq, Eq)]
+impl Display for ApiToken {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Deserialize, Debug, PartialEq, Eq)]
 #[serde(transparent)]
-#[display(fmt = "{}", _0)]
 pub struct RunnerRegistrationToken(pub String);
 
 #[derive(Deserialize)]
 struct TokenPayload {
     token: RunnerRegistrationToken,
 }
-
-#[derive(Debug, Display, From)]
-pub enum ApiError {
-    #[display(fmt = "{}", _0)]
-    SendRequest(SendRequestError),
-    #[display(fmt = "Status {}: {}", _0, _1)]
-    Status(StatusCode, String),
-    #[display(fmt = "{}", _0)]
-    Payload(JsonPayloadError),
-    #[display(fmt = "resource not found")]
-    NotFound,
-}
-
-impl std::error::Error for ApiError {}
 
 const GITHUB: &str = "https://api.github.com";
 const RUNNER_TOKEN: &str = "actions/runners/registration-token";
@@ -78,20 +78,24 @@ impl<T, E> ResultType for Result<T, E> {
 type ClientResponse = <<SendClientRequest as Future>::Output as ResultType>::Payload;
 
 async fn api_request(
-    method: Method,
-    url: String,
+    method: &Method,
+    url: &String,
     api_token: &ApiToken,
-) -> Result<ClientResponse, ApiError> {
+) -> anyhow::Result<ClientResponse> {
     debug!("Sending GitHub API request {method} {url}");
     let header_token = HeaderValue::try_from(format!("Token {api_token}"))
-        .expect("Invalid bytes in GitHub API token");
+        .with_context(|| "Cannot construct GitHub API token header")?;
     let response = Client::new()
-        .request(method, url)
+        .request(method.clone(), url.clone())
         .append_header((header::ACCEPT, "application/vnd.github.v3+json"))
         .append_header((header::USER_AGENT, USER_AGENT))
         .append_header((header::AUTHORIZATION, header_token))
         .send()
-        .await?;
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!("{}", e)
+                .context(format!("Error sending GitHub API request {method} {url}"))
+        })?;
     if response.status().is_success() {
         Ok(response)
     } else {
@@ -100,20 +104,23 @@ async fn api_request(
             .body()
             .await
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-            .unwrap_or_else(|e| format!("Cannot retrieve HTTP response body: {e}"));
-        Err(ApiError::Status(response.status(), body))
+            .with_context(|| "Cannot retrieve HTTP response body for {method} {url}")?;
+        anyhow::bail!(
+            "{method} {url} returned status {s}: {body}",
+            s = response.status()
+        );
     }
 }
 
 pub async fn generate_runner_registration_token(
     entity: &Entity,
     api_token: &ApiToken,
-) -> Result<RunnerRegistrationToken, ApiError> {
+) -> anyhow::Result<RunnerRegistrationToken> {
     let endpoint = match entity {
         Entity::Organization(org) => format!("{GITHUB}/orgs/{org}/{RUNNER_TOKEN}"),
         Entity::Repository(org, repo) => format!("{GITHUB}/repos/{org}/{repo}/{RUNNER_TOKEN}"),
     };
-    let response = api_request(Method::POST, endpoint, api_token).await?;
+    let response = api_request(&Method::POST, &endpoint, api_token).await?;
     let payload: TokenPayload = { response }.json().await?;
     Ok(payload.token)
 }
@@ -131,12 +138,9 @@ struct ReleasesPayload {
     assets: Vec<Asset>,
 }
 
-pub async fn locate_runner_tarball(
-    platform: &str,
-    api_token: &ApiToken,
-) -> Result<Asset, ApiError> {
+pub async fn locate_runner_tarball(platform: &str, api_token: &ApiToken) -> anyhow::Result<Asset> {
     let endpoint = format!("{GITHUB}/repos/actions/runner/releases/latest");
-    let response = api_request(Method::GET, endpoint, api_token).await?;
+    let response = api_request(&Method::GET, &endpoint, api_token).await?;
     let releases: ReleasesPayload = { response }.json().await?;
 
     let full_release_re = Regex::new(&format!(
@@ -147,31 +151,21 @@ pub async fn locate_runner_tarball(
 
     (releases.assets.into_iter())
         .find(|a| full_release_re.is_match(&a.name))
-        .ok_or(ApiError::NotFound)
+        .ok_or_else(|| anyhow::anyhow!("No Actions Runner release found for platform {platform}"))
 }
 
-#[derive(Debug, Display, From)]
-pub enum DownloadError {
-    #[display(fmt = "{}", _0)]
-    SendRequest(SendRequestError),
-    #[display(fmt = "{}", _0)]
-    Payload(PayloadError),
-    #[display(fmt = "{}", _0)]
-    Io(io::Error),
-    #[display(fmt = "Too many retries")]
-    TooManyRetries,
-}
-
-pub async fn download(url: &str, to: &mut dyn io::Write) -> Result<(), DownloadError> {
+pub async fn download(url: &str, to: &mut dyn io::Write) -> anyhow::Result<()> {
     use futures_util::stream::StreamExt;
     let mut stream = Client::new()
         .get(url)
         .append_header((header::USER_AGENT, USER_AGENT))
         .send()
-        .await?;
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e).context(format!("Error sending request to {url}")))?;
     while let Some(chunk) = stream.next().await {
-        let bytes = chunk?;
-        to.write(&bytes)?;
+        let bytes = chunk.with_context(|| "Error reading response from {url}")?;
+        to.write(&bytes)
+            .with_context(|| "Error writing response to output")?;
     }
     Ok(())
 }

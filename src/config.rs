@@ -1,6 +1,7 @@
-use derive_more::{From, FromStr};
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use serde::Deserialize;
 
@@ -18,9 +19,17 @@ pub struct SlurmConfig {
     pub job_name: String,
 }
 
-#[derive(Debug, Deserialize, Hash, PartialEq, Eq, From, FromStr, Clone)]
+#[derive(Debug, Deserialize, Hash, PartialEq, Eq, Clone)]
 #[serde(transparent)]
 pub struct TargetId(pub String);
+
+impl FromStr for TargetId {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(TargetId(s.to_owned()))
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

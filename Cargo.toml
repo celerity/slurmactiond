@@ -11,7 +11,6 @@ serde_json = "1.0"
 toml = "0.5" # for config files
 log = { version = "0.4", features = ["serde"] }
 env_logger = "0.9"
-derive_more = "0.99"
 regex = "1"
 hmac = "0.12" # for verifying webhook signatures
 sha2 = "0.10"
@@ -22,6 +21,8 @@ clap = { version = "3", features = ["derive"] } # argument parsing
 hostname = "^0.3" # for logging the hostname from a SLURM job
 atty = "^0.2" # for stripping timestamps and auxilary information when logging to systemd
 libc = "0.2" # for getuid()
+thiserror = "1.0" # derive(Error) for inspectable errors
+anyhow = "1.0" # type-erased errors
 
 [dev-dependencies]
 tempfile = "3" # for testing file_io

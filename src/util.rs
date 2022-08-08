@@ -2,11 +2,12 @@ use log::{debug, warn};
 use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::process::{ExitStatus, Output, Stdio};
+use thiserror::Error;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader, Lines};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::select;
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub struct ExitError {
     status: i32,
     stderr: String,
@@ -22,14 +23,14 @@ impl Display for ExitError {
     }
 }
 
-impl std::error::Error for ExitError {}
-
-pub trait OutputExt {
-    fn successful(self) -> Result<Output, ExitError>;
+pub trait SuccessExt {
+    type Item;
+    fn successful(self) -> Result<Self::Item, ExitError>;
 }
 
-impl OutputExt for Output {
-    fn successful(self) -> Result<Output, ExitError> {
+impl SuccessExt for Output {
+    type Item = Self;
+    fn successful(self) -> Result<Self::Item, ExitError> {
         if self.status.success() {
             Ok(self)
         } else {
@@ -41,12 +42,9 @@ impl OutputExt for Output {
     }
 }
 
-pub trait ExitStatusExt {
-    fn successful(self) -> Result<(), ExitError>;
-}
-
-impl ExitStatusExt for ExitStatus {
-    fn successful(self) -> Result<(), ExitError> {
+impl SuccessExt for ExitStatus {
+    type Item = ();
+    fn successful(self) -> Result<Self::Item, ExitError> {
         if self.success() {
             Ok(())
         } else {
@@ -55,6 +53,22 @@ impl ExitStatusExt for ExitStatus {
                 stderr: String::new(),
             })
         }
+    }
+}
+
+pub trait ResultSuccessExt {
+    type Item;
+    fn and_successful(self) -> anyhow::Result<Self::Item>;
+}
+
+impl<T, E> ResultSuccessExt for Result<T, E>
+where
+    T: SuccessExt,
+    anyhow::Error: From<E>,
+{
+    type Item = <T as SuccessExt>::Item;
+    fn and_successful(self) -> anyhow::Result<Self::Item> {
+        Ok(self?.successful()?)
     }
 }
 
@@ -143,7 +157,10 @@ impl CommandOutputStreamExt for Command {
             .stderr(Stdio::piped())
             .spawn()?;
         let output_stream = ChildStreamMux::new(child.stdout.take(), child.stderr.take());
-        Ok(ChildOutputStream { child, output_stream })
+        Ok(ChildOutputStream {
+            child,
+            output_stream,
+        })
     }
 }
 

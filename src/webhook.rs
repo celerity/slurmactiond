@@ -1,27 +1,31 @@
 use std::convert::Infallible;
-use std::fmt::{Debug, Display};
+use std::fmt::{Debug, Display, Formatter};
 use std::io;
 
-use actix_web::{App, HttpMessage, HttpServer, ResponseError, web};
 use actix_web::error::ParseError;
 use actix_web::http::header::{Header, HeaderName, HeaderValue, TryIntoHeaderValue};
 use actix_web::http::StatusCode;
-use derive_more::Display;
+use actix_web::{web, App, HttpMessage, HttpServer, ResponseError};
 use log::{debug, error, info};
 use serde::Deserialize;
 
-use crate::Config;
 use crate::config::TargetId;
 use crate::slurm;
+use crate::Config;
 
 type StaticContent = (&'static str, StatusCode);
 type StaticResult = actix_web::Result<StaticContent>;
 
 const NO_CONTENT: StaticContent = ("", StatusCode::NO_CONTENT);
 
-#[derive(Debug, Display)]
-#[display(fmt = "Bad Request: {}", _0)]
+#[derive(Debug)]
 struct BadRequest(String);
+
+impl Display for BadRequest {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Bad Request: {}", self.0)
+    }
+}
 
 impl ResponseError for BadRequest {
     fn status_code(&self) -> StatusCode {
@@ -29,9 +33,17 @@ impl ResponseError for BadRequest {
     }
 }
 
-#[derive(Debug, Display)]
-#[display(fmt = "Something went wrong on our end. Please consult the slurmactiond logs.")]
+#[derive(Debug)]
 struct InternalServerError;
+
+impl Display for InternalServerError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Something went wrong on our end. Please consult the slurmactiond logs."
+        )
+    }
+}
 
 impl ResponseError for InternalServerError {
     fn status_code(&self) -> StatusCode {

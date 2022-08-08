@@ -1,65 +1,21 @@
 use crate::slurm;
-use derive_more::{Display, From};
+use anyhow::Context as _;
 use log::error;
-use std::error::Error;
 use std::ffi::OsStr;
-use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
 use std::{fs, io};
-
-#[derive(Debug)]
-pub struct FileIoError {
-    trace: String,
-    path: PathBuf,
-    error: Box<dyn Error + 'static>,
-}
-
-impl Display for FileIoError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}: {}", self.trace, self.path.display(), self.error)
-    }
-}
-
-impl Error for FileIoError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(self.error.as_ref())
-    }
-}
-
-impl FileIoError {
-    pub fn new(
-        trace: impl Into<String>,
-        path: impl Into<PathBuf>,
-        error: impl Into<Box<dyn Error + 'static>>,
-    ) -> Self {
-        Self {
-            trace: trace.into(),
-            path: path.into(),
-            error: error.into(),
-        }
-    }
-}
+use thiserror::Error;
 
 pub struct LockFile {
     path: PathBuf,
 }
 
-#[derive(Debug, Display, From)]
+#[derive(Error, Debug)]
 pub enum LockError {
-    #[display(fmt = "Lock file occupied by job {}", _0)]
+    #[error("lock file occupied by job {0}")]
     Occupied(slurm::JobId),
-    #[display(fmt = "{}", _0)]
-    #[from]
-    FileIo(FileIoError),
-}
-
-impl Error for LockError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            LockError::Occupied(_) => None,
-            LockError::FileIo(e) => Some(e),
-        }
-    }
+    #[error(transparent)]
+    Io(#[from] anyhow::Error),
 }
 
 fn add_extension(path: PathBuf, extension: impl AsRef<OsStr>) -> PathBuf {
@@ -69,24 +25,26 @@ fn add_extension(path: PathBuf, extension: impl AsRef<OsStr>) -> PathBuf {
 }
 
 impl LockFile {
-    fn try_read(path: &Path) -> Result<Option<slurm::JobId>, FileIoError> {
+    fn read_if_exists(path: &Path) -> anyhow::Result<Option<slurm::JobId>> {
         use std::io::Read;
 
         match fs::OpenOptions::new().read(true).open(&path) {
             Ok(mut lock) => {
                 let mut buf = Vec::new();
-                lock.read_to_end(&mut buf)
-                    .map_err(|e| FileIoError::new("reading existing lock file", path, e))?;
-                let contents = String::from_utf8(buf)
-                    .map_err(|e| FileIoError::new("parsing lock file", path, e))?;
-                let occupant = contents
-                    .trim()
-                    .parse()
-                    .map_err(|e| FileIoError::new("parsing lock file", path, e))?;
+                lock.read_to_end(&mut buf).with_context(|| {
+                    format!("Failed to read existing lock file {}", path.display())
+                })?;
+                let occupant = String::from_utf8(buf)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|s| s.trim().parse().map_err(anyhow::Error::from))
+                    .with_context(|| format!("Failed to parse lock file {}", path.display()))?;
                 Ok(Some(occupant))
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(FileIoError::new("opening existing lock file", path, e)),
+            Err(e) => Err(anyhow::Error::new(e).context(format!(
+                "Failed to open existing lock file {}",
+                path.display()
+            ))),
         }
     }
 
@@ -107,15 +65,15 @@ impl LockFile {
                             path: path.to_owned(),
                         })
                     }
-                    Err(e) => {
+                    e @ Err(_) => {
                         drop(file); // close the file so we can remove it
                         let _ = fs::remove_file(&path); // swallow the second error
-                        return Err(FileIoError::new("writing to lock file", path, e).into());
+                        e.with_context(|| format!("writing to lock file {}", path.display()))?;
                     }
                 },
                 Err(e) => {
                     if e.kind() != io::ErrorKind::AlreadyExists {
-                        return Err(FileIoError::new("creating lock file", path, e).into());
+                        Err(e).with_context(|| format!("creating lock file {}", path.display()))?;
                     } else {
                         // continue trying to read the existing lock file
                     }
@@ -123,7 +81,7 @@ impl LockFile {
             }
 
             // otherwise, read the existing file and identify the occupying job
-            match Self::try_read(&path) {
+            match Self::read_if_exists(&path) {
                 Ok(Some(occupant)) => return Err(LockError::Occupied(occupant)),
                 Ok(None) => (), // race: the file was deleted since our creation attempt, try again
                 Err(e) => return Err(e.into()),
@@ -154,12 +112,12 @@ impl LockFile {
                     // We have successfully acquired the .adopting lock, but a sibling process might
                     // still have completed adoption between us reading the existing lock file and
                     // taking the .adopting lock. Re-read the existing lock file to detect this.
-                    match Self::try_read(path)? {
+                    match Self::read_if_exists(path)? {
                         Some(new_occupant) if new_occupant == occupant => {
                             // We can safely assume that we are the only ones trying to re-create
                             // the lock file.
-                            fs::remove_file(path).map_err(|e| {
-                                FileIoError::new("removing stale lock file", path, e)
+                            fs::remove_file(path).with_context(|| {
+                                format!("removing stale lock file {}", path.display())
                             })?;
                         }
                         _ => {
@@ -196,17 +154,23 @@ impl WorkDir {
         base_dir: &Path,
         job: slurm::JobId,
         active_jobs: &Vec<slurm::JobId>,
-    ) -> Result<WorkDir, FileIoError> {
+    ) -> Result<WorkDir, anyhow::Error> {
         for concurrent_id in 0u32.. {
             let path = base_dir.join(PathBuf::from(concurrent_id.to_string()));
             if let Err(e) = fs::create_dir_all(&path) {
-                return Err(FileIoError::new("creating working directory", path, e));
+                return Err(e)
+                    .with_context(|| format!("creating working directory {}", path.display()));
             }
 
-            match LockFile::create_or_adopt(&path.join(".lock"), job, active_jobs) {
+            let lock_file_path = path.join(".lock");
+            match LockFile::create_or_adopt(&lock_file_path, job, active_jobs) {
                 Ok(lock) => return Ok(WorkDir { path, _lock: lock }),
                 Err(LockError::Occupied(_)) => (), // retry with the next concurrent_id
-                Err(LockError::FileIo(e)) => return Err(e),
+                Err(LockError::Io(e)) => {
+                    return Err(e).with_context(|| {
+                        format!("creating lock file {}", lock_file_path.display())
+                    })
+                }
             }
         }
         unreachable!(); // not technically, but would require 2^32 existing locked work dirs
@@ -220,20 +184,20 @@ fn test_immediate_lock_simple() {
 
     let job = slurm::JobId(42);
 
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), None);
+    assert_eq!(LockFile::read_if_exists(&lock_path).unwrap(), None);
 
     let lock = LockFile::create(&lock_path, job).unwrap();
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), Some(job));
+    assert_eq!(LockFile::read_if_exists(&lock_path).unwrap(), Some(job));
 
     drop(lock);
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), None);
+    assert_eq!(LockFile::read_if_exists(&lock_path).unwrap(), None);
 }
 
 #[cfg(test)]
 fn assert_occupied(result: Result<LockFile, LockError>, concurrent_job: slurm::JobId) {
     match result {
         Ok(_) => panic!("lock creation must fail"),
-        Err(LockError::FileIo(e)) => panic!("{}", e),
+        Err(LockError::Io(e)) => panic!("{}", e),
         Err(LockError::Occupied(occupant)) => assert_eq!(occupant, concurrent_job),
     }
 }
@@ -246,7 +210,7 @@ fn test_immediate_lock_occupied() {
     let concurrent_job = slurm::JobId(10);
     fs::write(&lock_path, format!("{}", concurrent_job.0).as_bytes()).unwrap();
     assert_eq!(
-        LockFile::try_read(&lock_path).unwrap(),
+        LockFile::read_if_exists(&lock_path).unwrap(),
         Some(concurrent_job)
     );
 
@@ -254,7 +218,7 @@ fn test_immediate_lock_occupied() {
     assert_occupied(LockFile::create(&lock_path, job), concurrent_job);
 
     assert_eq!(
-        LockFile::try_read(&lock_path).unwrap(),
+        LockFile::read_if_exists(&lock_path).unwrap(),
         Some(concurrent_job)
     );
 }
@@ -267,13 +231,13 @@ fn test_recursive_lock_simple() {
     let job = slurm::JobId(42);
     let active_jobs = [job];
 
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), None);
+    assert_eq!(LockFile::read_if_exists(&lock_path).unwrap(), None);
 
     let lock = LockFile::create_or_adopt(&lock_path, job, &active_jobs).unwrap();
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), Some(job));
+    assert_eq!(LockFile::read_if_exists(&lock_path).unwrap(), Some(job));
 
     drop(lock);
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), None);
+    assert_eq!(LockFile::read_if_exists(&lock_path).unwrap(), None);
 }
 
 #[test]
@@ -286,11 +250,23 @@ fn test_recursive_lock_occupied_by_active_job() {
     let active_jobs = [job, concurrent_job];
 
     fs::write(&lock_path, format!("{}", concurrent_job.0).as_bytes()).unwrap();
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), Some(concurrent_job));
+    assert_eq!(
+        LockFile::read_if_exists(&lock_path).unwrap(),
+        Some(concurrent_job)
+    );
 
-    assert_occupied(LockFile::create_or_adopt(&lock_path, job, &active_jobs), concurrent_job);
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), Some(concurrent_job));
-    assert_eq!(LockFile::try_read(&add_extension(lock_path.clone(), ".adopting")).unwrap(), None);
+    assert_occupied(
+        LockFile::create_or_adopt(&lock_path, job, &active_jobs),
+        concurrent_job,
+    );
+    assert_eq!(
+        LockFile::read_if_exists(&lock_path).unwrap(),
+        Some(concurrent_job)
+    );
+    assert_eq!(
+        LockFile::read_if_exists(&add_extension(lock_path.clone(), ".adopting")).unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -304,11 +280,20 @@ fn test_recursive_lock_occupied_by_newer_job() {
     let active_jobs = [job]; // see documentation in slurm::has_job_terminated
 
     fs::write(&lock_path, format!("{}", concurrent_job.0).as_bytes()).unwrap();
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), Some(concurrent_job));
+    assert_eq!(
+        LockFile::read_if_exists(&lock_path).unwrap(),
+        Some(concurrent_job)
+    );
 
-    assert_occupied(LockFile::create_or_adopt(&lock_path, job, &active_jobs), concurrent_job);
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), Some(concurrent_job));
-    assert_eq!(LockFile::try_read(&adopting_lock_path).unwrap(), None);
+    assert_occupied(
+        LockFile::create_or_adopt(&lock_path, job, &active_jobs),
+        concurrent_job,
+    );
+    assert_eq!(
+        LockFile::read_if_exists(&lock_path).unwrap(),
+        Some(concurrent_job)
+    );
+    assert_eq!(LockFile::read_if_exists(&adopting_lock_path).unwrap(), None);
 }
 
 #[test]
@@ -322,15 +307,18 @@ fn test_recursive_lock_adopt() {
 
     let stale_job = slurm::JobId(10);
     fs::write(&lock_path, format!("{}", stale_job.0).as_bytes()).unwrap();
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), Some(stale_job));
-    assert_eq!(LockFile::try_read(&adopting_lock_path).unwrap(), None);
+    assert_eq!(
+        LockFile::read_if_exists(&lock_path).unwrap(),
+        Some(stale_job)
+    );
+    assert_eq!(LockFile::read_if_exists(&adopting_lock_path).unwrap(), None);
 
     let lock = LockFile::create_or_adopt(&lock_path, job, &active_jobs).unwrap();
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), Some(job));
-    assert_eq!(LockFile::try_read(&adopting_lock_path).unwrap(), None);
+    assert_eq!(LockFile::read_if_exists(&lock_path).unwrap(), Some(job));
+    assert_eq!(LockFile::read_if_exists(&adopting_lock_path).unwrap(), None);
 
     drop(lock);
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), None);
+    assert_eq!(LockFile::read_if_exists(&lock_path).unwrap(), None);
 }
 
 #[test]
@@ -345,16 +333,35 @@ fn test_recursive_lock_adopt_occupied_by_active_job() {
     let active_jobs = [job, concurrent_job];
 
     fs::write(&lock_path, format!("{}", stale_job.0).as_bytes()).unwrap();
-    fs::write(&adopting_lock_path, format!("{}", concurrent_job.0).as_bytes()).unwrap();
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), Some(stale_job));
-    assert_eq!(LockFile::try_read(&adopting_lock_path).unwrap(), Some(concurrent_job));
+    fs::write(
+        &adopting_lock_path,
+        format!("{}", concurrent_job.0).as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(
+        LockFile::read_if_exists(&lock_path).unwrap(),
+        Some(stale_job)
+    );
+    assert_eq!(
+        LockFile::read_if_exists(&adopting_lock_path).unwrap(),
+        Some(concurrent_job)
+    );
 
     // The occupant must be reported as the adopting concurrent job
-    assert_occupied(LockFile::create_or_adopt(&lock_path, job, &active_jobs), concurrent_job);
+    assert_occupied(
+        LockFile::create_or_adopt(&lock_path, job, &active_jobs),
+        concurrent_job,
+    );
 
     // The "concurrent" job does not actually do anything, so the adopting lock will still be there
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), Some(stale_job));
-    assert_eq!(LockFile::try_read(&adopting_lock_path).unwrap(), Some(concurrent_job));
+    assert_eq!(
+        LockFile::read_if_exists(&lock_path).unwrap(),
+        Some(stale_job)
+    );
+    assert_eq!(
+        LockFile::read_if_exists(&adopting_lock_path).unwrap(),
+        Some(concurrent_job)
+    );
 }
 
 #[test]
@@ -371,18 +378,27 @@ fn test_recursive_lock_adopt_twice() {
     let stale_job_2 = slurm::JobId(19);
     fs::write(&lock_path, format!("{}", stale_job_1.0).as_bytes()).unwrap();
     fs::write(&adopting_lock_path, format!("{}", stale_job_2.0).as_bytes()).unwrap();
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), Some(stale_job_1));
     assert_eq!(
-        LockFile::try_read(&adopting_lock_path).unwrap(),
+        LockFile::read_if_exists(&lock_path).unwrap(),
+        Some(stale_job_1)
+    );
+    assert_eq!(
+        LockFile::read_if_exists(&adopting_lock_path).unwrap(),
         Some(stale_job_2)
     );
-    assert_eq!(LockFile::try_read(&adopting_twice_lock_path).unwrap(), None);
+    assert_eq!(
+        LockFile::read_if_exists(&adopting_twice_lock_path).unwrap(),
+        None
+    );
 
     let lock = LockFile::create_or_adopt(&lock_path, job, &active_jobs).unwrap();
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), Some(job));
-    assert_eq!(LockFile::try_read(&adopting_lock_path).unwrap(), None);
-    assert_eq!(LockFile::try_read(&adopting_twice_lock_path).unwrap(), None);
+    assert_eq!(LockFile::read_if_exists(&lock_path).unwrap(), Some(job));
+    assert_eq!(LockFile::read_if_exists(&adopting_lock_path).unwrap(), None);
+    assert_eq!(
+        LockFile::read_if_exists(&adopting_twice_lock_path).unwrap(),
+        None
+    );
 
     drop(lock);
-    assert_eq!(LockFile::try_read(&lock_path).unwrap(), None);
+    assert_eq!(LockFile::read_if_exists(&lock_path).unwrap(), None);
 }

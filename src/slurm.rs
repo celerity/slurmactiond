@@ -1,50 +1,46 @@
-use std::io;
+use std::fmt::{Display, Formatter};
 use std::num::ParseIntError;
 use std::process::{ExitStatus, Stdio};
+use std::str::FromStr;
 
-use derive_more::{Display, From, FromStr};
+use anyhow::Context as _;
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use tokio::process::{Child, Command};
 
 use crate::config::{Config, TargetId};
 use crate::json_log;
-use crate::util::{self, ChildStream, ChildStreamMux, ExitError, OutputExt};
+use crate::util::{self, ChildStream, ChildStreamMux, ResultSuccessExt};
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Display, Debug, Serialize, Deserialize, FromStr)]
-#[display(fmt = "{}", _0)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct JobId(pub u64);
 
+impl Display for JobId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for JobId {
+    type Err = ParseIntError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse().map(JobId)
+    }
+}
+
 const JOB_ID_VAR: &str = "SLURM_JOB_ID";
 
-#[derive(Debug, Display)]
-pub enum JobIdReadError {
-    #[display(fmt = "Environment variable {JOB_ID_VAR} not set")]
-    Unset,
-    #[display(fmt = "Could not parse {JOB_ID_VAR}: {}", _0)]
-    Parse(ParseIntError),
-}
-
-pub fn current_job() -> Result<JobId, JobIdReadError> {
+pub fn current_job() -> anyhow::Result<JobId> {
     let id_string = std::env::vars()
         .find(|(k, _)| k == JOB_ID_VAR)
-        .ok_or(JobIdReadError::Unset)?
+        .ok_or_else(|| anyhow::anyhow!("Environment variable {JOB_ID_VAR} not set"))?
         .1;
-    let id_int = id_string.parse().map_err(|e| JobIdReadError::Parse(e))?;
+    let id_int = id_string
+        .parse()
+        .with_context(|| format!("Cannot parse {JOB_ID_VAR}"))?;
     Ok(JobId(id_int))
-}
-
-impl std::error::Error for JobIdReadError {}
-
-#[derive(Debug, Display, From)]
-pub enum Error {
-    #[display(fmt = "{}", _0)]
-    Io(io::Error),
-    #[display(fmt = "{}", _0)]
-    ChildProcess(ExitError),
-    #[display(fmt = "Cannot parse output: {}", _0)]
-    Parse(Box<dyn std::error::Error + Send + Sync>),
 }
 
 pub struct RunnerJob {
@@ -53,10 +49,11 @@ pub struct RunnerJob {
 }
 
 impl RunnerJob {
-    pub async fn spawn(config: &Config, target: &TargetId) -> Result<RunnerJob, Error> {
+    pub async fn spawn(config: &Config, target: &TargetId) -> anyhow::Result<RunnerJob> {
         let name = format!("{}-{}", &config.slurm.job_name, &target.0);
 
-        let executable = std::env::current_exe()?
+        let executable = std::env::current_exe()
+            .with_context(|| "Cannot determine current executable name")?
             .as_os_str()
             .to_string_lossy()
             .into_owned();
@@ -81,27 +78,35 @@ impl RunnerJob {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
-            .spawn()?;
+            .spawn()
+            .with_context(|| "Failed to execute srun")?;
 
         Ok(RunnerJob { name, child })
     }
 
-    pub async fn join(self) -> io::Result<ExitStatus> {
+    pub async fn join(self) -> anyhow::Result<ExitStatus> {
         let RunnerJob { name, mut child } = self;
 
         let mut output = ChildStreamMux::new(child.stdout.take(), child.stderr.take());
-        while let Some((stream, line)) = output.next_line().await? {
+        while let Some((stream, line)) = output
+            .next_line()
+            .await
+            .with_context(|| "Error reading output of srun")?
+        {
             match stream {
                 ChildStream::Stdout => json_log::parse_and_log(&name, &line),
                 ChildStream::Stderr => warn!("{}", line),
             }
         }
 
-        child.wait().await
+        child
+            .wait()
+            .await
+            .with_context(|| "Error waiting for srun execution to complete")
     }
 }
 
-pub async fn active_jobs(config: &Config) -> Result<Vec<JobId>, Error> {
+pub async fn active_jobs(config: &Config) -> anyhow::Result<Vec<JobId>> {
     let squeue = config.slurm.squeue.as_deref().unwrap_or("squeue");
     let uid = util::getuid().to_string();
     let output = Command::new(squeue)
@@ -118,12 +123,12 @@ pub async fn active_jobs(config: &Config) -> Result<Vec<JobId>, Error> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
-        .await?
-        .successful()?;
+        .await
+        .and_successful()?;
     String::from_utf8(output.stdout)
-        .map_err(|e| Error::Parse(Box::new(e)))?
+        .with_context(|| "Decoding the output of squeue")?
         .lines()
-        .map(|l| l.parse().map_err(|e| Error::Parse(Box::new(e))))
+        .map(|l| l.parse().with_context(|| "Parsing the output of squeue"))
         .collect()
 }
 
