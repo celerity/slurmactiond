@@ -111,7 +111,7 @@ async fn workflow_job_event(config: &Config, payload: &WorkflowJobPayload) -> St
             actix_web::rt::spawn(async move {
                 match job.join().await {
                     Ok(status) => info!("SLURM job exited with status {}", status),
-                    Err(e) => error!("Running SLURM job: {e}"),
+                    Err(e) => error!("Running SLURM job: {e:#}"),
                 }
             });
         }
@@ -202,7 +202,7 @@ async fn webhook_event(
 
     match event.0 {
         GithubEvent::WorkflowJob => {
-            let p = serde_json::from_slice(&payload).map_err(|e| BadRequest(format!("{e}")))?;
+            let p = serde_json::from_slice(&payload).map_err(|e| BadRequest(format!("{e:#}")))?;
             workflow_job_event(config.as_ref(), &p).await?;
             Ok(NO_CONTENT)
         }

@@ -65,15 +65,15 @@ struct Arguments {
 fn main_inner(command: Command, config_file: &Path) -> Result<(), String> {
     let cfg = fs::read(config_file)
         .and_then(|bytes| Ok(toml::from_slice(&bytes)?))
-        .map_err(|e| format!("Reading config file {p}: {e}", p = config_file.display()))?;
+        .map_err(|e| format!("Reading config file {p}: {e:#}", p = config_file.display()))?;
 
     match command {
         Command::Server => {
-            webhook::main(cfg).map_err(|e| format!("Serving webhook over HTTP: {e}"))
+            webhook::main(cfg).map_err(|e| format!("Serving webhook over HTTP: {e:#}"))
         }
         Command::Runner { target } => {
             let job_id = slurm::current_job().map_err(|e| e.to_string())?;
-            runner::run(cfg, target, job_id).map_err(|e| format!("Starting runner: {e}"))
+            runner::run(cfg, target, job_id).map_err(|e| format!("Starting runner: {e:#}"))
         }
     }
 }
@@ -88,7 +88,7 @@ fn main() {
     configure_logger(&command);
 
     if let Err(e) = main_inner(command, &config_file) {
-        error!("{e}");
+        error!("{e:#}");
         std::process::exit(1);
     }
 }

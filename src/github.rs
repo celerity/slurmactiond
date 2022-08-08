@@ -161,7 +161,7 @@ pub async fn download(url: &str, to: &mut dyn io::Write) -> anyhow::Result<()> {
         .append_header((header::USER_AGENT, USER_AGENT))
         .send()
         .await
-        .map_err(|e| anyhow::anyhow!("{}", e).context(format!("Error sending request to {url}")))?;
+        .map_err(|e| anyhow::anyhow!("{e:#}").context(format!("Error sending request to {url}")))?;
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.with_context(|| "Error reading response from {url}")?;
         to.write(&bytes)
