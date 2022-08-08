@@ -116,43 +116,44 @@ async fn unregister_instance(
 }
 
 async fn run_instance(work_path: &Path) -> io::Result<ExitStatus> {
-    let mut run = Command::new("./run.sh")
-        .current_dir(work_path)
-        .output_stream()?;
+    const LISTEN_TIMEOUT: Duration = Duration::from_secs(30);
+    const NUM_RETRIES: u32 = 4;
 
-    enum Listen {
-        Success,
-        Timeout,
-        Eof,
-    }
-
-    let listen_timeout = Duration::from_secs(60);
-    let listen = loop {
-        match tokio::time::timeout(listen_timeout, run.output_stream.next_line()).await? {
-            Ok(Some((stream, line))) => {
-                log_child_output(stream, "run.sh", &line);
-                if stream == ChildStream::Stdout && line.contains(": Running job:") {
-                    break Listen::Success;
+    let mut retry: u32 = 0;
+    loop {
+        let mut run = Command::new("./run.sh")
+            .current_dir(work_path)
+            .output_stream()?;
+        loop {
+            match tokio::time::timeout(LISTEN_TIMEOUT, run.output_stream.next_line()).await {
+                Ok(Ok(Some((stream, line)))) => {
+                    log_child_output(stream, "run.sh", &line);
+                    if stream == ChildStream::Stdout && line.contains(": Running job:") {
+                        return run.log_output("run.sh").await;
+                    }
+                }
+                Ok(Ok(None)) => {
+                    error!("runner exited without picking up a job");
+                    return run.child.wait().await;
+                }
+                Ok(Err(io_err)) => {
+                    run.child.kill().await?;
+                    run.child.wait().await?;
+                    return Err(io_err);
+                }
+                Err(_elapsed)  => {
+                    error!("runner timed out waiting for jobs");
+                    run.child.kill().await?;
+                    let status = run.child.wait().await?;
+                    if retry < NUM_RETRIES - 1 {
+                        retry += 1;
+                        info!("Retrying ({retry}/{NUM_RETRIES})...");
+                    } else {
+                        // TODO proper error reporting, maybe crate anyhow
+                        return Ok(status);
+                    }
                 }
             }
-            Ok(None) => break Listen::Eof,
-            Err(_timeout) => break Listen::Timeout,
-        }
-    };
-
-    match listen {
-        Listen::Success => {
-            info!("runner picked up a job");
-            run.log_output("run.sh").await
-        }
-        Listen::Timeout => {
-            error!("runner timed out waiting for jobs");
-            run.child.kill().await?;
-            run.child.wait().await
-        }
-        Listen::Eof => {
-            error!("runner exited without picking up a job");
-            run.child.wait().await
         }
     }
 }
