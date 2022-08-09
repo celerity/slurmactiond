@@ -1,0 +1,25 @@
+name: Build and Test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: [ self-hosted, slurm ]
+    container:
+      image: 'rust:1.60-buster'
+    steps:
+      - uses: actions/checkout@v2
+      - name: Build (Debug)
+        run: cargo build
+      - name: Run Unit Tests
+        run: cargo test
+      - name: Build (Release)
+        run: cargo build --release
+      - name: Archive Release
+        uses: actions/upload-artifact@v2
+        with:
+          name: Release
+          path: target/release/slurmactiond
