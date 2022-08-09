@@ -73,7 +73,8 @@ impl LockFile {
                 },
                 Err(e) => {
                     if e.kind() != io::ErrorKind::AlreadyExists {
-                        Err(e).with_context(|| format!("creating lock file `{}`", path.display()))?;
+                        Err(e)
+                            .with_context(|| format!("creating lock file `{}`", path.display()))?;
                     } else {
                         // continue trying to read the existing lock file
                     }

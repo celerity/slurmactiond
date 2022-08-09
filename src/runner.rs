@@ -47,7 +47,10 @@ async fn update_runner_tarball(
     if tarball_path.metadata()?.len() == expected_size {
         Ok(())
     } else {
-        warn!("`{}` does not have the expected size", tarball_path.display());
+        warn!(
+            "`{}` does not have the expected size",
+            tarball_path.display()
+        );
         fs::remove_file(tarball_path).with_context(|| {
             format!(
                 "Error removing outdated or corrupted tarball `{}`",

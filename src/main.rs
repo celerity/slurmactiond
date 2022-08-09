@@ -68,8 +68,12 @@ fn main_inner() -> anyhow::Result<()> {
     let command = args.command.unwrap_or(Command::Server);
     configure_logger(&command);
 
-    let config_file = (args.config_file.canonicalize())
-        .with_context(|| format!("Cannot resolve config path `{}`", args.config_file.display()))?;
+    let config_file = (args.config_file.canonicalize()).with_context(|| {
+        format!(
+            "Cannot resolve config path `{}`",
+            args.config_file.display()
+        )
+    })?;
 
     match command {
         Command::Server => {

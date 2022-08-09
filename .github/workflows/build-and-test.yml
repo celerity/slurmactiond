@@ -9,9 +9,11 @@ jobs:
   build-and-test:
     runs-on: [ self-hosted, slurm ]
     container:
-      image: 'rust:1.60-buster'
+      image: 'slurmactiond-build:1.60'
     steps:
       - uses: actions/checkout@v2
+      - name: Check Formatting
+        run: cargo fmt --check --message-format short
       - name: Build (Debug)
         run: cargo build
       - name: Run Unit Tests
