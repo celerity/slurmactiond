@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use serde::Deserialize;
@@ -10,8 +10,8 @@ use crate::github;
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SlurmConfig {
-    pub srun: Option<String>,
-    pub squeue: Option<String>,
+    pub srun: Option<PathBuf>,
+    pub squeue: Option<PathBuf>,
     #[serde(default)]
     pub srun_options: Vec<String>,
     #[serde(default)]
@@ -81,6 +81,13 @@ pub struct Config {
     pub runner: RunnerConfig,
     #[serde(default)]
     pub targets: HashMap<TargetId, TargetConfig>,
+}
+
+impl Config {
+    pub fn read_from_toml_file(path: &Path) -> anyhow::Result<Config> {
+        let bytes = std::fs::read(path)?;
+        Ok(toml::from_slice(&bytes)?)
+    }
 }
 
 #[test]

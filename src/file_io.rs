@@ -32,17 +32,17 @@ impl LockFile {
             Ok(mut lock) => {
                 let mut buf = Vec::new();
                 lock.read_to_end(&mut buf).with_context(|| {
-                    format!("Failed to read existing lock file {}", path.display())
+                    format!("Failed to read existing lock file `{}`", path.display())
                 })?;
                 let occupant = String::from_utf8(buf)
                     .map_err(anyhow::Error::from)
                     .and_then(|s| s.trim().parse().map_err(anyhow::Error::from))
-                    .with_context(|| format!("Failed to parse lock file {}", path.display()))?;
+                    .with_context(|| format!("Failed to parse lock file `{}`", path.display()))?;
                 Ok(Some(occupant))
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(anyhow::Error::new(e).context(format!(
-                "Failed to open existing lock file {}",
+                "Failed to open existing lock file `{}`",
                 path.display()
             ))),
         }
@@ -68,12 +68,12 @@ impl LockFile {
                     e @ Err(_) => {
                         drop(file); // close the file so we can remove it
                         let _ = fs::remove_file(&path); // swallow the second error
-                        e.with_context(|| format!("writing to lock file {}", path.display()))?;
+                        e.with_context(|| format!("writing to lock file `{}`", path.display()))?;
                     }
                 },
                 Err(e) => {
                     if e.kind() != io::ErrorKind::AlreadyExists {
-                        Err(e).with_context(|| format!("creating lock file {}", path.display()))?;
+                        Err(e).with_context(|| format!("creating lock file `{}`", path.display()))?;
                     } else {
                         // continue trying to read the existing lock file
                     }
@@ -117,7 +117,7 @@ impl LockFile {
                             // We can safely assume that we are the only ones trying to re-create
                             // the lock file.
                             fs::remove_file(path).with_context(|| {
-                                format!("removing stale lock file {}", path.display())
+                                format!("removing stale lock file `{}`", path.display())
                             })?;
                         }
                         _ => {
@@ -139,7 +139,7 @@ impl LockFile {
 impl Drop for LockFile {
     fn drop(&mut self) {
         if let Err(e) = fs::remove_file(&self.path) {
-            error!("removing lock file {p}: {e}", p = self.path.display());
+            error!("removing lock file `{p}`: {e}", p = self.path.display());
         }
     }
 }
@@ -159,7 +159,7 @@ impl WorkDir {
             let path = base_dir.join(PathBuf::from(concurrent_id.to_string()));
             if let Err(e) = fs::create_dir_all(&path) {
                 return Err(e)
-                    .with_context(|| format!("creating working directory {}", path.display()));
+                    .with_context(|| format!("creating working directory `{}`", path.display()));
             }
 
             let lock_file_path = path.join(".lock");
@@ -168,7 +168,7 @@ impl WorkDir {
                 Err(LockError::Occupied(_)) => (), // retry with the next concurrent_id
                 Err(LockError::Io(e)) => {
                     return Err(e).with_context(|| {
-                        format!("creating lock file {}", lock_file_path.display())
+                        format!("creating lock file `{}`", lock_file_path.display())
                     })
                 }
             }

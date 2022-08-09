@@ -9,14 +9,14 @@ use anyhow::Context as _;
 use log::{debug, info, warn};
 use tokio::process::Command;
 
-use crate::config::TargetId;
+use crate::config::{Config, TargetId};
 use crate::file_io::WorkDir;
 use crate::github::RunnerRegistrationToken;
 use crate::util::{
     async_retry_after, log_child_output, ChildStream, CommandOutputStreamExt as _,
     ResultSuccessExt as _,
 };
-use crate::{github, slurm, Config};
+use crate::{github, slurm};
 
 async fn find_or_download_runner_tarball(url: &str, tarball_path: &Path) -> anyhow::Result<()> {
     match fs::OpenOptions::new()
@@ -29,10 +29,10 @@ async fn find_or_download_runner_tarball(url: &str, tarball_path: &Path) -> anyh
             github::download(url, &mut file).await
         }
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists && tarball_path.is_file() => {
-            debug!("Tarball exists locally at {}", tarball_path.display());
+            debug!("Tarball exists locally at `{}`", tarball_path.display());
             Ok(())
         }
-        Err(e) => Err(e).with_context(|| format!("Unable to download {url}")),
+        Err(e) => Err(e).with_context(|| format!("Unable to download `{url}`")),
     }
 }
 
@@ -43,14 +43,14 @@ async fn update_runner_tarball(
 ) -> anyhow::Result<()> {
     find_or_download_runner_tarball(url, tarball_path)
         .await
-        .with_context(|| format!("Failed to update runner tarball from {url}"))?;
+        .with_context(|| format!("Failed to update runner tarball from `{url}`"))?;
     if tarball_path.metadata()?.len() == expected_size {
         Ok(())
     } else {
-        warn!("{} does not have the expected size", tarball_path.display());
+        warn!("`{}` does not have the expected size", tarball_path.display());
         fs::remove_file(tarball_path).with_context(|| {
             format!(
-                "Error removing outdated or corrupted tarball {}",
+                "Error removing outdated or corrupted tarball `{}`",
                 tarball_path.display()
             )
         })
@@ -157,15 +157,18 @@ async fn unpack_tar_gz(tarball: &Path, into_dir: &Path) -> anyhow::Result<()> {
         .log_output("tar")
         .await
         .and_successful()
-        .with_context(|| format!("Unpacking archive {} with tar", tarball.display()))
+        .with_context(|| format!("Unpacking archive `{}` with tar", tarball.display()))
 }
 
 #[actix_web::main]
-pub async fn run(cfg: Config, target: TargetId, job: slurm::JobId) -> anyhow::Result<()> {
+pub async fn run(config_file: &Path, target: TargetId, job: slurm::JobId) -> anyhow::Result<()> {
     const API_ATTEMPTS: u32 = 3;
     const API_COOLDOWN: Duration = Duration::from_secs(30);
     const LISTEN_ATTEMPTS: u32 = 5;
     const LISTEN_COOLDOWN: Duration = Duration::from_secs(10);
+
+    let cfg = Config::read_from_toml_file(config_file)
+        .with_context(|| format!("Reading configuration from `{}`", config_file.display()))?;
 
     let base_labels = cfg.runner.registration.labels.iter().map(AsRef::as_ref);
     let target_labels = cfg.targets[&target].runner_labels.iter().map(AsRef::as_ref);
@@ -183,8 +186,7 @@ pub async fn run(cfg: Config, target: TargetId, job: slurm::JobId) -> anyhow::Re
         let host_name = hostname::get()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|_| "(unknown hostname)".to_string());
-        let dir_name = work_dir.path.display();
-        info!("Running on {host_name} in {dir_name}");
+        info!("Running on {host_name} in `{}`", work_dir.path.display());
     }
 
     if work_dir.path.join("config.sh").is_file() {
@@ -208,7 +210,7 @@ pub async fn run(cfg: Config, target: TargetId, job: slurm::JobId) -> anyhow::Re
         .await
         .with_context(|| "Error downloading latest GitHub Actions Runner release")?;
 
-        debug!("Unpacking runner tarball {}", tarball_path.display());
+        debug!("Unpacking runner tarball `{}`", tarball_path.display());
         unpack_tar_gz(&tarball_path, &work_dir.path)
             .await
             .with_context(|| "Error installing GitHub Actions Runner")?;

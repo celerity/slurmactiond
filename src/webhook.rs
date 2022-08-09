@@ -1,11 +1,12 @@
 use std::convert::Infallible;
 use std::fmt::{Debug, Display, Formatter};
-use std::io;
+use std::path::{Path, PathBuf};
 
 use actix_web::error::ParseError;
 use actix_web::http::header::{Header, HeaderName, HeaderValue, TryIntoHeaderValue};
 use actix_web::http::StatusCode;
 use actix_web::{web, App, HttpMessage, HttpServer, ResponseError};
+use anyhow::Context as _;
 use log::{debug, error, info};
 use serde::Deserialize;
 
@@ -80,6 +81,11 @@ struct WorkflowJobPayload {
     workflow_job: WorkflowJob,
 }
 
+struct SharedData {
+    config_path: PathBuf,
+    config: Config,
+}
+
 fn match_target<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c TargetId> {
     let unmatched_labels: Vec<_> = (job.labels.iter())
         .filter(|l| !config.runner.registration.labels.contains(l))
@@ -96,16 +102,16 @@ fn match_target<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c TargetI
     }
 }
 
-async fn workflow_job_event(config: &Config, payload: &WorkflowJobPayload) -> StaticResult {
+async fn workflow_job_event(data: &SharedData, payload: &WorkflowJobPayload) -> StaticResult {
     if payload.action == WorkflowStatus::Queued {
-        if let Some(target) = match_target(&config, &payload.workflow_job) {
+        if let Some(target) = match_target(&data.config, &payload.workflow_job) {
             info!(
                 "executing SLURM job for runner job {} of workflow {} ({})",
                 payload.workflow_job.job_id,
                 payload.workflow_job.workflow_id,
                 payload.workflow_job.name
             );
-            let job = slurm::RunnerJob::spawn(&config, target)
+            let job = slurm::RunnerJob::spawn(&data.config_path, &data.config, target)
                 .await
                 .map_err(|e| internal_server_error("Submitting job to SLURM", e))?;
             actix_web::rt::spawn(async move {
@@ -190,12 +196,12 @@ async fn webhook_event(
     event: web::Header<GithubEvent>,
     sig: web::Header<HubSignature256>,
     payload: web::Bytes,
-    config: web::Data<Config>,
+    data: web::Data<SharedData>,
 ) -> StaticResult {
     use hmac::Mac;
     type HmacSha256 = hmac::Hmac<sha2::Sha256>;
 
-    let mut mac = HmacSha256::new_from_slice(config.http.secret.as_bytes()).unwrap();
+    let mut mac = HmacSha256::new_from_slice(data.config.http.secret.as_bytes()).unwrap();
     mac.update(&payload);
     mac.verify_slice(&sig.0 .0)
         .map_err(|_| BadRequest("HMAC mismatch".to_owned()))?;
@@ -203,7 +209,7 @@ async fn webhook_event(
     match event.0 {
         GithubEvent::WorkflowJob => {
             let p = serde_json::from_slice(&payload).map_err(|e| BadRequest(format!("{e:#}")))?;
-            workflow_job_event(config.as_ref(), &p).await?;
+            workflow_job_event(data.as_ref(), &p).await?;
             Ok(NO_CONTENT)
         }
         GithubEvent::Other => Ok(NO_CONTENT),
@@ -211,13 +217,21 @@ async fn webhook_event(
 }
 
 #[actix_web::main]
-pub async fn main(cfg: Config) -> io::Result<()> {
-    let bind_address = cfg.http.bind.clone();
-    let data = web::Data::new(cfg);
+pub async fn main(config_file: &Path) -> anyhow::Result<()> {
+    let config = Config::read_from_toml_file(config_file)
+        .with_context(|| format!("Reading configuration from `{}`", config_file.display()))?;
+
+    let bind_address = config.http.bind.clone();
+    let data = web::Data::new(SharedData {
+        config_path: config_file.to_owned(),
+        config,
+    });
+
     HttpServer::new(move || App::new().app_data(data.clone()).service(webhook_event))
         .bind(bind_address)?
         .run()
-        .await
+        .await?;
+    Ok(())
 }
 
 #[test]

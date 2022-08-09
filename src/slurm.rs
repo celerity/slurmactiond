@@ -1,5 +1,7 @@
+use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::num::ParseIntError;
+use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::str::FromStr;
 
@@ -49,26 +51,46 @@ pub struct RunnerJob {
 }
 
 impl RunnerJob {
-    pub async fn spawn(config: &Config, target: &TargetId) -> anyhow::Result<RunnerJob> {
+    pub async fn spawn(
+        config_path: &Path,
+        config: &Config,
+        target: &TargetId,
+    ) -> anyhow::Result<RunnerJob> {
         let name = format!("{}-{}", &config.slurm.job_name, &target.0);
+        let os_name = OsString::from_str(&name)
+            .with_context(|| "Runner name is not an OS-compatible string")?;
 
         let executable = std::env::current_exe()
             .with_context(|| "Cannot determine current executable name")?
             .as_os_str()
-            .to_string_lossy()
-            .into_owned();
+            .to_owned();
 
-        let mut args = Vec::new();
-        args.extend_from_slice(&config.slurm.srun_options);
-        args.extend_from_slice(&config.targets[target].srun_options);
-        args.push("-J".to_string());
-        args.push(name.clone());
+        let mut args: Vec<OsString> = Vec::new();
+        args.extend(config.slurm.srun_options.iter().map(OsString::from));
+        args.extend(
+            config.targets[target]
+                .srun_options
+                .iter()
+                .map(OsString::from),
+        );
+        args.push(OsString::from_str("-J").unwrap());
+        args.push(os_name);
         args.push(executable);
-        args.push("runner".to_owned());
-        args.push(target.0.to_owned());
+        args.push(OsString::from_str("runner").unwrap());
+        args.push(OsString::from_str(&target.0).unwrap());
+        args.push(OsString::from_str("-c").unwrap());
+        args.push(config_path.as_os_str().to_owned());
 
-        let srun = config.slurm.srun.as_deref().unwrap_or("srun");
-        debug!("Starting {srun} {}", args.join(" "));
+        let srun = (config.slurm.srun)
+            .clone()
+            .unwrap_or_else(|| PathBuf::from_str("srun").unwrap());
+        if log::log_enabled!(log::Level::Debug) {
+            let mut cl = vec![srun.to_string_lossy().to_owned()];
+            for a in &args {
+                cl.push(a.to_string_lossy().to_owned());
+            }
+            debug!("Starting {}", cl.join(" "));
+        }
 
         let child = Command::new(srun)
             .args(args)
@@ -107,7 +129,7 @@ impl RunnerJob {
 }
 
 pub async fn active_jobs(config: &Config) -> anyhow::Result<Vec<JobId>> {
-    let squeue = config.slurm.squeue.as_deref().unwrap_or("squeue");
+    let squeue = (config.slurm.squeue.clone()).unwrap_or(PathBuf::from_str("squeue").unwrap());
     let uid = util::getuid().to_string();
     let output = Command::new(squeue)
         .args(&[

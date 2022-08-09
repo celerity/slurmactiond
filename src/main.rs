@@ -1,7 +1,7 @@
 extern crate core;
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use anyhow::Context as _;
+use std::path::PathBuf;
 
 use atty::Stream;
 use clap::{Parser, Subcommand};
@@ -62,32 +62,29 @@ struct Arguments {
     config_file: PathBuf,
 }
 
-fn main_inner(command: Command, config_file: &Path) -> Result<(), String> {
-    let cfg = fs::read(config_file)
-        .and_then(|bytes| Ok(toml::from_slice(&bytes)?))
-        .map_err(|e| format!("Reading config file {p}: {e:#}", p = config_file.display()))?;
+fn main_inner() -> anyhow::Result<()> {
+    let args = Arguments::parse();
+
+    let command = args.command.unwrap_or(Command::Server);
+    configure_logger(&command);
+
+    let config_file = (args.config_file.canonicalize())
+        .with_context(|| format!("Cannot resolve config path `{}`", args.config_file.display()))?;
 
     match command {
         Command::Server => {
-            webhook::main(cfg).map_err(|e| format!("Serving webhook over HTTP: {e:#}"))
+            webhook::main(&config_file).with_context(|| "Error while serving webhook over HTTP")
         }
         Command::Runner { target } => {
-            let job_id = slurm::current_job().map_err(|e| e.to_string())?;
-            runner::run(cfg, target, job_id).map_err(|e| format!("Starting runner: {e:#}"))
+            let job_id = slurm::current_job()
+                .with_context(|| "Failed to determine the SLURM job id of this process")?;
+            runner::run(&config_file, target, job_id)
         }
     }
 }
 
 fn main() {
-    let Arguments {
-        command,
-        config_file,
-    } = Arguments::parse();
-    let command = command.unwrap_or(Command::Server);
-
-    configure_logger(&command);
-
-    if let Err(e) = main_inner(command, &config_file) {
+    if let Err(e) = main_inner() {
         error!("{e:#}");
         std::process::exit(1);
     }
