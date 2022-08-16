@@ -77,10 +77,10 @@ impl RunnerJob {
         args.push(OsString::from_str("-J").unwrap());
         args.push(os_name);
         args.push(executable);
-        args.push(OsString::from_str("runner").unwrap());
-        args.push(OsString::from_str(&target.0).unwrap());
         args.push(OsString::from_str("-c").unwrap());
         args.push(config_path.as_os_str().to_owned());
+        args.push(OsString::from_str("runner").unwrap());
+        args.push(OsString::from_str(&target.0).unwrap());
 
         let srun = (config.slurm.srun)
             .clone()
