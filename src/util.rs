@@ -188,9 +188,8 @@ where
                 error!("{}", e);
                 attempt += 1;
                 if attempt >= max_attempts {
-                    return Err(
-                        anyhow::Error::from(e).context("Giving up after {attempt} attempts")
-                    );
+                    return Err(anyhow::Error::from(e)
+                        .context(format!("Giving up after {attempt} attempts")));
                 }
             }
         }
