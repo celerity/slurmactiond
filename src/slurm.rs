@@ -7,12 +7,13 @@ use std::str::FromStr;
 
 use anyhow::Context as _;
 use log::{debug, warn};
+use nix::unistd::getuid;
 use serde::{Deserialize, Serialize};
 use tokio::process::{Child, Command};
 
 use crate::config::{Config, TargetId};
 use crate::json_log;
-use crate::util::{self, ChildStream, ChildStreamMux, ResultSuccessExt};
+use crate::util::{ChildStream, ChildStreamMux, ResultSuccessExt as _};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -130,7 +131,7 @@ impl RunnerJob {
 
 pub async fn active_jobs(config: &Config) -> anyhow::Result<Vec<JobId>> {
     let squeue = (config.slurm.squeue.clone()).unwrap_or(PathBuf::from_str("squeue").unwrap());
-    let uid = util::getuid().to_string();
+    let uid = getuid().to_string();
     let output = Command::new(squeue)
         .args(&[
             "-h",

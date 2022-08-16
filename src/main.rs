@@ -1,11 +1,13 @@
 extern crate core;
 
 use anyhow::Context as _;
+use std::io::{stderr, stdout};
+use std::os::unix::io::AsRawFd as _;
 use std::path::PathBuf;
 
-use atty::Stream;
 use clap::{Parser, Subcommand};
 use log::error;
+use nix::unistd::isatty;
 
 use config::Config;
 
@@ -41,7 +43,9 @@ fn configure_logger(cmd: &Command) {
         }
         Command::Server => {
             builder.format_target(log::max_level() >= log::Level::Debug);
-            if !atty::is(Stream::Stdout) && !atty::is(Stream::Stderr) {
+            if !isatty(stdout().as_raw_fd()).unwrap_or(false)
+                && !isatty(stderr().as_raw_fd()).unwrap_or(false)
+            {
                 // probably running as a service to systemd, which does its own timestamps
                 builder.format_timestamp(None);
             }

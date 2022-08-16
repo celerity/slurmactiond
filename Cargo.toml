@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-actix-web = "4" # HTTP / web framework
-awc = { version = "3", features = ["openssl"] } # HTTP client implementation used by actix-web
+actix-web = { version = "4", features = ["macros"], default-features = false } # HTTP / web framework
+awc = { version = "3", features = ["openssl", "compress-gzip"], default-features = false } # HTTP client implementation used by actix-web
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.5" # for config files
@@ -18,11 +18,9 @@ hex = "0.4" # for decoding SHA256 signatures
 futures-util = "0.3" # dependency of awc required for traversing streams
 tokio = { version = "1.18", features = ["process", "macros", "time"] } # for async IPC
 clap = { version = "3", features = ["derive"] } # argument parsing
-hostname = "^0.3" # for logging the hostname from a SLURM job
-atty = "^0.2" # for stripping timestamps and auxilary information when logging to systemd
-libc = "0.2" # for getuid()
 thiserror = "1.0" # derive(Error) for inspectable errors
 anyhow = "1.0" # type-erased errors
+nix = "0.25" # gethostname, getuid, kill, isatty (for detecting interactive vs service)
 
 [dev-dependencies]
 tempfile = "3" # for testing file_io

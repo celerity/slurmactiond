@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use log::{debug, info, warn};
+use nix::sys::signal::{Signal, kill};
+use nix::unistd::{gethostname, Pid};
 use tokio::process::Command;
 
 use crate::config::{Config, TargetId};
@@ -108,11 +110,11 @@ async fn wait_child(child: &mut tokio::process::Child) -> anyhow::Result<ExitSta
         .with_context(|| "Error waiting for subprocess to exit")
 }
 
-async fn kill_and_wait_child(child: &mut tokio::process::Child) -> anyhow::Result<()> {
-    child
-        .kill()
-        .await
-        .with_context(|| "Unexpected error when trying to kill subprocess")?;
+async fn interrupt_child(child: &mut tokio::process::Child) -> anyhow::Result<()> {
+    let pid = (child.id())
+        .map(|p| Pid::from_raw(p as _))
+        .expect("child process already consumed");
+    kill(pid, Signal::SIGINT).with_context(|| "Unexpected error when trying to kill subprocess")?;
     wait_child(child).await?;
     Ok(())
 }
@@ -142,7 +144,7 @@ async fn run_instance(work_path: &Path) -> anyhow::Result<()> {
                 anyhow::bail!("Runner exited without picking up a job");
             }
             Ok(Err(io_err)) => {
-                kill_and_wait_child(&mut run.child).await?;
+                interrupt_child(&mut run.child).await?;
                 return Err(From::from(io_err));
             }
             Err(elapsed) => {
@@ -186,7 +188,7 @@ pub async fn run(config_file: &Path, target: TargetId, job: slurm::JobId) -> any
         .with_context(|| "Cannot lock private working directory")?;
 
     if log::max_level() >= log::Level::Info {
-        let host_name = hostname::get()
+        let host_name = gethostname()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|_| "(unknown hostname)".to_string());
         info!("Running on {host_name} in `{}`", work_dir.path.display());

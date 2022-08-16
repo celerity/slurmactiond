@@ -166,10 +166,6 @@ impl CommandOutputStreamExt for Command {
     }
 }
 
-pub fn getuid() -> libc::uid_t {
-    unsafe { libc::getuid() }
-}
-
 pub async fn async_retry_after<F, T, E>(
     delay: Duration,
     max_attempts: u32,
