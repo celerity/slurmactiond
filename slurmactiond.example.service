@@ -1,0 +1,11 @@
+[Unit]
+Requires=network.target
+After=network.target
+
+[Service]
+User=cirunner
+Group=cirunner
+ExecStart=sh -lc /home/cirunner/slurmactiond
+WorkingDirectory=/home/cirunner
+Type=simple
+Restart=always
