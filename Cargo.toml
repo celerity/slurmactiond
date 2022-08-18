@@ -1,6 +1,13 @@
 [package]
 name = "slurmactiond"
 version = "0.1.0"
+description = "Schedule GitHub Actions jobs through SLURM"
+authors = ["Distributed and Parallel Systems Group, University of Innsbruck, Austria"]
+repository = "https://github.com/celerity/slurmactiond"
+readme = "README.md"
+license = "MIT"
+license-file = "LICENSE"
+keywords = ["slurm", "github", "github-actions", "ci"]
 edition = "2021"
 
 [dependencies]
