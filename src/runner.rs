@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use log::{debug, info, warn};
-use nix::sys::signal::{Signal, kill};
+use nix::sys::signal::{kill, Signal};
 use nix::unistd::{gethostname, Pid};
 use tokio::process::Command;
 
