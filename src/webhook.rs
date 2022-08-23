@@ -1,7 +1,6 @@
 use std::convert::Infallible;
 use std::fmt::{Debug, Display, Formatter};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use actix_web::error::ParseError;
 use actix_web::http::header::{Header, HeaderName, HeaderValue, TryIntoHeaderValue};
@@ -86,32 +85,14 @@ struct WorkflowJobPayload {
 struct SharedData {
     config_path: PathBuf,
     config: Config,
-    scheduler: Mutex<Scheduler>,
-}
-
-fn match_target<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c TargetId> {
-    let unmatched_labels: Vec<_> = (job.labels.iter())
-        // GitHub only includes the "self-hosted" label if the set of labels is otherwise empty.
-        // We don't require the user to list "self-hosted" in the config.
-        .filter(|l| !(*l == "self-hosted" || config.runner.registration.labels.contains(*l)))
-        .collect();
-    let closest_matching_target = (config.targets.iter())
-        .filter(|(_, p)| unmatched_labels.iter().all(|l| p.runner_labels.contains(l)))
-        .min_by_key(|(_, p)| p.runner_labels.len()); // min: closest match
-    if let Some((id, _)) = closest_matching_target {
-        debug!("matched runner labels {:?} to target {}", job.labels, id.0);
-        Some(id)
-    } else {
-        debug!("runner labels {:?} do not match any target", job.labels);
-        None
-    }
+    scheduler: Scheduler,
 }
 
 async fn workflow_job_event(data: &SharedData, payload: &WorkflowJobPayload) -> StaticResult {
     let SharedData {
         config_path,
         config,
-        ..
+        scheduler,
     } = data;
     let WorkflowJobPayload {
         action,
@@ -132,13 +113,10 @@ async fn workflow_job_event(data: &SharedData, payload: &WorkflowJobPayload) -> 
         .as_ref()
         .ok_or_else(|| BadRequest("workflow_job.runner_name missing".to_owned()));
 
-    let result = {
-        let sched = &mut data.scheduler.lock().expect("poisoned lock");
-        match action {
-            WorkflowStatus::Queued => sched.job_enqueued(*job_id, job_labels, config_path, config),
-            WorkflowStatus::InProgress => sched.job_processing(*job_id, runner_name?.as_str()),
-            WorkflowStatus::Completed => Ok(sched.job_completed(*job_id, runner_name?.as_str())),
-        }
+    let result = match action {
+        WorkflowStatus::Queued => scheduler.job_enqueued(*job_id, job_labels, config_path, config),
+        WorkflowStatus::InProgress => scheduler.job_processing(*job_id, runner_name?.as_str()),
+        WorkflowStatus::Completed => Ok(scheduler.job_completed(*job_id)),
     };
     match result {
         Ok(()) => Ok(NO_CONTENT),
@@ -247,7 +225,7 @@ pub async fn main(config_file: &Path) -> anyhow::Result<()> {
     let data = web::Data::new(SharedData {
         config_path: config_file.to_owned(),
         config,
-        scheduler: Mutex::new(Scheduler::new()),
+        scheduler: Scheduler::new(),
     });
 
     HttpServer::new(move || App::new().app_data(data.clone()).service(webhook_event))

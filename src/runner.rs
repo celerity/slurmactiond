@@ -18,7 +18,7 @@ use crate::util::{
     async_retry_after, log_child_output, ChildStream, CommandOutputStreamExt as _,
     ResultSuccessExt as _,
 };
-use crate::{github, slurm};
+use crate::{github, ipc, slurm};
 
 async fn find_or_download_runner_tarball(url: &str, tarball_path: &Path) -> anyhow::Result<()> {
     match fs::OpenOptions::new()
@@ -174,6 +174,12 @@ pub async fn run(config_file: &Path, target: TargetId, job: slurm::JobId) -> any
 
     let cfg = Config::read_from_toml_file(config_file)
         .with_context(|| format!("Reading configuration from `{}`", config_file.display()))?;
+    let runner_name = format!("{}-{}-{}", cfg.runner.registration.name, target.0, job);
+
+    ipc::send(ipc::RunnerMetadata {
+        slurm_job: job,
+        runner_name: runner_name.clone(),
+    });
 
     let base_labels = cfg.runner.registration.labels.iter().map(AsRef::as_ref);
     let target_labels = cfg.targets[&target].runner_labels.iter().map(AsRef::as_ref);
@@ -238,7 +244,6 @@ pub async fn run(config_file: &Path, target: TargetId, job: slurm::JobId) -> any
         .await
         .with_context(|| "Error unregistering previous runner")?;
 
-    let runner_name = format!("{}-{}-{}", cfg.runner.registration.name, target.0, job);
     info!("Registering runner {runner_name}");
     async_retry_after(API_COOLDOWN, API_ATTEMPTS, || {
         register_instance(

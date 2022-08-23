@@ -16,7 +16,7 @@ use crate::config::TargetId;
 mod config;
 mod file_io;
 mod github;
-mod json_log;
+mod ipc;
 mod runner;
 mod scheduler;
 mod slurm;
@@ -38,7 +38,7 @@ fn configure_logger(cmd: &Command) {
 
     match cmd {
         Command::Runner { .. } => {
-            let formatter = json_log::Formatter::new();
+            let formatter = ipc::LogFormatter::new();
             builder.format(move |f, r| formatter.format(f, r));
             builder.target(Stdout);
         }

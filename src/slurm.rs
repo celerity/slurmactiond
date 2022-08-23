@@ -6,13 +6,13 @@ use std::process::{ExitStatus, Stdio};
 use std::str::FromStr;
 
 use anyhow::Context as _;
-use log::{debug, warn};
+use log::{debug, error, warn};
 use nix::unistd::getuid;
 use serde::{Deserialize, Serialize};
 use tokio::process::{Child, Command};
 
 use crate::config::{Config, TargetId};
-use crate::json_log;
+use crate::ipc;
 use crate::util::{ChildStream, ChildStreamMux, ResultSuccessExt as _};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
@@ -46,9 +46,42 @@ pub fn current_job() -> anyhow::Result<JobId> {
     Ok(JobId(id_int))
 }
 
-pub struct RunnerJob {
-    name: String,
+pub struct RunnerJobState {
     child: Child,
+    output: ChildStreamMux,
+}
+
+impl RunnerJobState {
+    async fn next_message(&mut self) -> anyhow::Result<Option<ipc::Envelope>> {
+        while let Some((stream, line)) = self
+            .output
+            .next_line()
+            .await
+            .with_context(|| "Error reading output of srun")?
+        {
+            match stream {
+                ChildStream::Stdout => return Ok(Some(ipc::parse(&line)?)),
+                ChildStream::Stderr => warn!("{}", line),
+            }
+        }
+        Ok(None)
+    }
+
+    async fn wait(&mut self) -> anyhow::Result<ExitStatus> {
+        return (self.child.wait().await)
+            .with_context(|| "Error waiting for srun execution to complete");
+    }
+}
+
+#[must_use]
+pub struct RunnerJob {
+    state: RunnerJobState,
+}
+
+#[must_use]
+pub struct AttachedRunnerJob {
+    metadata: Option<ipc::RunnerMetadata>,
+    state: RunnerJobState,
 }
 
 impl RunnerJob {
@@ -88,7 +121,7 @@ impl RunnerJob {
             debug!("Starting {}", cl.join(" "));
         }
 
-        let child = Command::new(&config.slurm.srun)
+        let mut child = Command::new(&config.slurm.srun)
             .args(args)
             .envs(config.slurm.srun_env.iter())
             .envs(config.targets[target].srun_env.iter())
@@ -99,28 +132,55 @@ impl RunnerJob {
             .spawn()
             .with_context(|| "Failed to execute srun")?;
 
-        Ok(RunnerJob { name, child })
+        let output = ChildStreamMux::new(child.stdout.take(), child.stderr.take());
+
+        Ok(RunnerJob {
+            state: RunnerJobState {
+                child,
+                output,
+            },
+        })
     }
 
-    pub async fn join(self) -> anyhow::Result<ExitStatus> {
-        let RunnerJob { name, mut child } = self;
-
-        let mut output = ChildStreamMux::new(child.stdout.take(), child.stderr.take());
-        while let Some((stream, line)) = output
-            .next_line()
-            .await
-            .with_context(|| "Error reading output of srun")?
-        {
-            match stream {
-                ChildStream::Stdout => json_log::parse_and_log(&name, &line),
-                ChildStream::Stderr => warn!("{}", line),
+    pub async fn attach(mut self) -> anyhow::Result<AttachedRunnerJob> {
+        loop {
+            match self.state.next_message().await? {
+                Some(ipc::Envelope::Log(entry)) => entry.log(),
+                Some(ipc::Envelope::Metadata(metadata)) => {
+                    return Ok(AttachedRunnerJob {
+                        state: self.state,
+                        metadata: Some(metadata),
+                    })
+                }
+                None => {
+                    if let Err(e) = self.state.wait().await {
+                        error!("{e:#}");
+                    }
+                    anyhow::bail!("Child process closed stdout before sending metadata")
+                }
             }
         }
+    }
+}
 
-        child
-            .wait()
-            .await
-            .with_context(|| "Error waiting for srun execution to complete")
+impl AttachedRunnerJob {
+    pub fn take_metadata(&mut self) -> ipc::RunnerMetadata {
+        self.metadata.take().expect("AttachedRunnerJob metadata already taken")
+    }
+
+    pub async fn wait(mut self) -> anyhow::Result<ExitStatus> {
+        loop {
+            match self.state.next_message().await? {
+                Some(ipc::Envelope::Log(entry)) => entry.log(),
+                Some(ipc::Envelope::Metadata(_)) => {
+                    if let Err(e) = self.state.child.wait().await {
+                        error!("Waiting on child process after it closed stdout early: {e:#}");
+                    }
+                    anyhow::bail!("Child process closed stdout before sending metadata")
+                }
+                None => return self.state.wait().await,
+            }
+        }
     }
 }
 
