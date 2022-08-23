@@ -52,7 +52,7 @@ pub struct RunnerJob {
 }
 
 impl RunnerJob {
-    pub async fn spawn(
+    pub fn spawn(
         config_path: &Path,
         config: &Config,
         target: &TargetId,

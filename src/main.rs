@@ -18,6 +18,7 @@ mod file_io;
 mod github;
 mod json_log;
 mod runner;
+mod scheduler;
 mod slurm;
 mod util;
 mod webhook;

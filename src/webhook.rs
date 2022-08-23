@@ -1,17 +1,18 @@
 use std::convert::Infallible;
 use std::fmt::{Debug, Display, Formatter};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use actix_web::error::ParseError;
 use actix_web::http::header::{Header, HeaderName, HeaderValue, TryIntoHeaderValue};
 use actix_web::http::StatusCode;
 use actix_web::{web, App, HttpMessage, HttpServer, ResponseError};
 use anyhow::Context as _;
-use log::{debug, error, info};
+use log::{debug, error};
 use serde::Deserialize;
 
-use crate::config::TargetId;
-use crate::slurm;
+use crate::github::{WorkflowId, WorkflowJobId};
+use crate::scheduler::{self, Scheduler};
 use crate::Config;
 
 type StaticContent = (&'static str, StatusCode);
@@ -52,8 +53,8 @@ impl ResponseError for InternalServerError {
     }
 }
 
-fn internal_server_error(cause: &str, e: impl Display) -> InternalServerError {
-    error!("Internal Server Error: {cause} {e}");
+fn internal_server_error(e: impl Display) -> InternalServerError {
+    error!("Internal Server Error: {e:#}");
     InternalServerError
 }
 
@@ -68,11 +69,12 @@ enum WorkflowStatus {
 #[derive(Deserialize, Debug, PartialEq, Eq)]
 struct WorkflowJob {
     #[serde(rename = "id")]
-    workflow_id: u64,
+    workflow_id: WorkflowId,
     #[serde(rename = "run_id")]
-    job_id: u64,
+    job_id: WorkflowJobId,
     name: String,
     labels: Vec<String>,
+    runner_name: Option<String>,
 }
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
@@ -84,6 +86,7 @@ struct WorkflowJobPayload {
 struct SharedData {
     config_path: PathBuf,
     config: Config,
+    scheduler: Mutex<Scheduler>,
 }
 
 fn match_target<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c TargetId> {
@@ -105,26 +108,43 @@ fn match_target<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c TargetI
 }
 
 async fn workflow_job_event(data: &SharedData, payload: &WorkflowJobPayload) -> StaticResult {
-    if payload.action == WorkflowStatus::Queued {
-        if let Some(target) = match_target(&data.config, &payload.workflow_job) {
-            info!(
-                "executing SLURM job for runner job {} of workflow {} ({})",
-                payload.workflow_job.job_id,
-                payload.workflow_job.workflow_id,
-                payload.workflow_job.name
-            );
-            let job = slurm::RunnerJob::spawn(&data.config_path, &data.config, target)
-                .await
-                .map_err(|e| internal_server_error("Submitting job to SLURM", e))?;
-            actix_web::rt::spawn(async move {
-                match job.join().await {
-                    Ok(status) => info!("SLURM job exited with status {}", status),
-                    Err(e) => error!("Running SLURM job: {e:#}"),
-                }
-            });
+    let SharedData {
+        config_path,
+        config,
+        ..
+    } = data;
+    let WorkflowJobPayload {
+        action,
+        workflow_job:
+        WorkflowJob {
+            job_id,
+            workflow_id,
+            name: workflow_name,
+            labels: job_labels,
+            runner_name,
+            ..
+        },
+    } = payload;
+
+    debug!("Workflow job {job_id} of workflow {workflow_id} ({workflow_name}) is {action:?}");
+
+    let runner_name = runner_name
+        .as_ref()
+        .ok_or_else(|| BadRequest("workflow_job.runner_name missing".to_owned()));
+
+    let result = {
+        let sched = &mut data.scheduler.lock().expect("poisoned lock");
+        match action {
+            WorkflowStatus::Queued => sched.job_enqueued(*job_id, job_labels, config_path, config),
+            WorkflowStatus::InProgress => sched.job_processing(*job_id, runner_name?.as_str()),
+            WorkflowStatus::Completed => Ok(sched.job_completed(*job_id, runner_name?.as_str())),
         }
+    };
+    match result {
+        Ok(()) => Ok(NO_CONTENT),
+        Err(scheduler::Error::InvalidState(s)) => Err(BadRequest(s).into()),
+        Err(scheduler::Error::Failed(e)) => Err(internal_server_error(e).into()),
     }
-    Ok(NO_CONTENT)
 }
 
 #[derive(Debug)]
@@ -227,6 +247,7 @@ pub async fn main(config_file: &Path) -> anyhow::Result<()> {
     let data = web::Data::new(SharedData {
         config_path: config_file.to_owned(),
         config,
+        scheduler: Mutex::new(Scheduler::new()),
     });
 
     HttpServer::new(move || App::new().app_data(data.clone()).service(webhook_event))

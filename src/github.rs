@@ -9,7 +9,27 @@ use awc::http::Method;
 use awc::{http::header, Client, SendClientRequest};
 use log::debug;
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct WorkflowJobId(pub u64);
+
+impl Display for WorkflowJobId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct WorkflowId(pub u64);
+
+impl Display for WorkflowId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
 #[serde(try_from = "&str")]
