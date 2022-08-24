@@ -11,7 +11,7 @@ use nix::sys::signal::{kill, Signal};
 use nix::unistd::{gethostname, Pid};
 use tokio::process::Command;
 
-use crate::config::{Config, TargetId};
+use crate::config::{Config, RunnerConfig, TargetId};
 use crate::file_io::WorkDir;
 use crate::github::RunnerRegistrationToken;
 use crate::util::{
@@ -119,16 +119,16 @@ async fn interrupt_child(child: &mut tokio::process::Child) -> anyhow::Result<()
     Ok(())
 }
 
-async fn run_instance(work_path: &Path) -> anyhow::Result<()> {
-    const LISTEN_TIMEOUT: Duration = Duration::from_secs(30);
-
+async fn run_instance(work_path: &Path, runner_cfg: &RunnerConfig) -> anyhow::Result<()> {
     let mut run = Command::new("./run.sh")
         .current_dir(work_path)
         .output_stream()?;
 
+    let listen_timeout = Duration::from_secs(runner_cfg.listen_timeout_s);
+
     loop {
         // repeat as long as we get output lines, then block within one of the match arms
-        match tokio::time::timeout(LISTEN_TIMEOUT, run.output_stream.next_line()).await {
+        match tokio::time::timeout(listen_timeout, run.output_stream.next_line()).await {
             Ok(Ok(Some((stream, line)))) => {
                 log_child_output(stream, "run.sh", &line);
                 if stream == ChildStream::Stdout && line.contains(": Running job:") {
@@ -254,7 +254,7 @@ pub async fn run(config_file: &Path, target: TargetId, job: slurm::JobId) -> any
 
     info!("Starting runner {runner_name}");
     async_retry_after(LISTEN_COOLDOWN, LISTEN_ATTEMPTS, || {
-        run_instance(&work_dir.path)
+        run_instance(&work_dir.path, &cfg.runner)
     })
     .await
     .with_context(|| "Error while executing Actions Runner")?;

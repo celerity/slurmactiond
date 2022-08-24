@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::num::ParseIntError;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use std::str::FromStr;
 
@@ -82,18 +82,15 @@ impl RunnerJob {
         args.push(OsString::from_str("runner").unwrap());
         args.push(OsString::from_str(&target.0).unwrap());
 
-        let srun = (config.slurm.srun)
-            .clone()
-            .unwrap_or_else(|| PathBuf::from_str("srun").unwrap());
         if log::log_enabled!(log::Level::Debug) {
-            let mut cl = vec![srun.to_string_lossy().to_owned()];
+            let mut cl = vec![config.slurm.srun.to_string_lossy().to_owned()];
             for a in &args {
                 cl.push(a.to_string_lossy().to_owned());
             }
             debug!("Starting {}", cl.join(" "));
         }
 
-        let child = Command::new(srun)
+        let child = Command::new(&config.slurm.srun)
             .args(args)
             .envs(config.slurm.srun_env.iter())
             .envs(config.targets[target].srun_env.iter())
@@ -130,9 +127,8 @@ impl RunnerJob {
 }
 
 pub async fn active_jobs(config: &Config) -> anyhow::Result<Vec<JobId>> {
-    let squeue = (config.slurm.squeue.clone()).unwrap_or(PathBuf::from_str("squeue").unwrap());
     let uid = getuid().to_string();
-    let output = Command::new(squeue)
+    let output = Command::new(&config.slurm.squeue)
         .args(&[
             "-h",
             "-o",

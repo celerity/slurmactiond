@@ -90,7 +90,7 @@ fn match_target<'c>(config: &'c Config, job: &WorkflowJob) -> Option<&'c TargetI
     let unmatched_labels: Vec<_> = (job.labels.iter())
         // GitHub only includes the "self-hosted" label if the set of labels is otherwise empty.
         // We don't require the user to list "self-hosted" in the config.
-        .filter(|l| !(l == "self-hosted" || config.runner.registration.labels.contains(l)))
+        .filter(|l| !(*l == "self-hosted" || config.runner.registration.labels.contains(*l)))
         .collect();
     let closest_matching_target = (config.targets.iter())
         .filter(|(_, p)| unmatched_labels.iter().all(|l| p.runner_labels.contains(l)))

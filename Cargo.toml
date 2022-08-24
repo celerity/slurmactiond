@@ -6,7 +6,6 @@ authors = ["Distributed and Parallel Systems Group, University of Innsbruck, Aus
 repository = "https://github.com/celerity/slurmactiond"
 readme = "README.md"
 license = "MIT"
-license-file = "LICENSE"
 keywords = ["slurm", "github", "github-actions", "ci"]
 edition = "2021"
 

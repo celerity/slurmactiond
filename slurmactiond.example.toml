@@ -16,6 +16,7 @@ job_name = "actions"
 [action_runner]
 platform = "linux-x64"
 work_dir = "/home/cirunner/slurmactiond"
+# listen_timeout_s = 300
 
 [action_runner.registration]
 name = "slurm"

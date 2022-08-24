@@ -10,13 +10,25 @@ use crate::github;
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SlurmConfig {
-    pub srun: Option<PathBuf>,
-    pub squeue: Option<PathBuf>,
+    #[serde(default = "SlurmConfig::default_srun")]
+    pub srun: PathBuf,
+    #[serde(default = "SlurmConfig::default_squeue")]
+    pub squeue: PathBuf,
     #[serde(default)]
     pub srun_options: Vec<String>,
     #[serde(default)]
     pub srun_env: HashMap<String, String>,
     pub job_name: String,
+}
+
+impl SlurmConfig {
+    fn default_srun() -> PathBuf {
+        PathBuf::from("srun")
+    }
+
+    fn default_squeue() -> PathBuf {
+        PathBuf::from("squeue")
+    }
 }
 
 #[derive(Debug, Deserialize, Hash, PartialEq, Eq, Clone)]
@@ -62,6 +74,14 @@ pub struct RunnerConfig {
     pub platform: String,
     pub work_dir: PathBuf,
     pub registration: RunnerRegistrationConfig,
+    #[serde(default = "RunnerConfig::default_listen_timeout_s")]
+    pub listen_timeout_s: u64,
+}
+
+impl RunnerConfig {
+    fn default_listen_timeout_s() -> u64 {
+        300
+    }
 }
 
 #[derive(Debug, Deserialize)]
