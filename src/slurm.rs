@@ -58,9 +58,6 @@ impl RunnerJob {
         target: &TargetId,
     ) -> anyhow::Result<RunnerJob> {
         let name = format!("{}-{}", &config.slurm.job_name, &target.0);
-        let os_name = OsString::from_str(&name)
-            .with_context(|| "Runner name is not an OS-compatible string")?;
-
         let executable = std::env::current_exe()
             .with_context(|| "Cannot determine current executable name")?
             .as_os_str()
@@ -74,13 +71,14 @@ impl RunnerJob {
                 .iter()
                 .map(OsString::from),
         );
-        args.push(OsString::from_str("-J").unwrap());
-        args.push(os_name);
+        args.push("-n1".into());
+        args.push("-J".into());
+        args.push(name.as_str().into());
         args.push(executable);
-        args.push(OsString::from_str("-c").unwrap());
-        args.push(config_path.as_os_str().to_owned());
-        args.push(OsString::from_str("runner").unwrap());
-        args.push(OsString::from_str(&target.0).unwrap());
+        args.push("-c".into());
+        args.push(config_path.into());
+        args.push("runner".into());
+        args.push(target.0.as_str().into());
 
         if log::log_enabled!(log::Level::Debug) {
             let mut cl = vec![config.slurm.srun.to_string_lossy().to_owned()];
