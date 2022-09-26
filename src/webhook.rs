@@ -115,7 +115,9 @@ async fn workflow_job_event(data: &SharedData, payload: &WorkflowJobPayload) -> 
 
     let result = match action {
         WorkflowStatus::Queued => scheduler.job_enqueued(*job_id, job_labels, config_path, config),
-        WorkflowStatus::InProgress => scheduler.job_processing(*job_id, runner_name?.as_str()),
+        WorkflowStatus::InProgress => {
+            scheduler.job_processing(*job_id, runner_name?.as_str(), config_path, config)
+        }
         WorkflowStatus::Completed => Ok(scheduler.job_completed(*job_id)),
     };
     match result {
