@@ -60,7 +60,11 @@ impl RunnerJobState {
             .with_context(|| "Error reading output of srun")?
         {
             match stream {
-                ChildStream::Stdout => return Ok(Some(ipc::parse(&line)?)),
+                ChildStream::Stdout => {
+                    return ipc::parse(&line)
+                        .map(Some)
+                        .with_context(|| "Error parsing IPC output from child process")
+                }
                 ChildStream::Stderr => warn!("{}", line),
             }
         }
@@ -135,10 +139,7 @@ impl RunnerJob {
         let output = ChildStreamMux::new(child.stdout.take(), child.stderr.take());
 
         Ok(RunnerJob {
-            state: RunnerJobState {
-                child,
-                output,
-            },
+            state: RunnerJobState { child, output },
         })
     }
 
@@ -165,7 +166,9 @@ impl RunnerJob {
 
 impl AttachedRunnerJob {
     pub fn take_metadata(&mut self) -> ipc::RunnerMetadata {
-        self.metadata.take().expect("AttachedRunnerJob metadata already taken")
+        self.metadata
+            .take()
+            .expect("AttachedRunnerJob metadata already taken")
     }
 
     pub async fn wait(mut self) -> anyhow::Result<ExitStatus> {

@@ -1,5 +1,4 @@
 use crate::slurm;
-use anyhow::Context;
 use log::log;
 use log::{Level, Record};
 use serde::{Deserialize, Serialize};
@@ -66,10 +65,14 @@ pub enum Envelope {
 }
 
 pub fn parse(json: &str) -> anyhow::Result<Envelope> {
-    serde_json::from_str(json).with_context(|| "Error parsing IPC output from child process")
+    let envelope = serde_json::from_str(json)?;
+    Ok(envelope)
 }
 
-pub fn send(metadata: RunnerMetadata) {
+pub fn send(metadata: RunnerMetadata) -> anyhow::Result<()> {
     let envelope = Envelope::Metadata(metadata);
-    serde_json::to_writer(std::io::stdout(), &envelope).expect("Cannot write metadata to stdout");
+    let mut stdout = std::io::stdout();
+    serde_json::to_writer(&mut stdout, &envelope)?;
+    stdout.write(b"\n")?;
+    Ok(())
 }

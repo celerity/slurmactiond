@@ -125,7 +125,7 @@ impl Scheduler {
             let handle = self.clone();
             actix_web::rt::spawn(async move {
                 if let Err(e) = handle.complete_runner_job(runner_job).await {
-                    error!("{e:}");
+                    error!("{e:#}");
                 }
             });
 

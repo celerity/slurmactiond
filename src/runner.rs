@@ -176,10 +176,11 @@ pub async fn run(config_file: &Path, target: TargetId, job: slurm::JobId) -> any
         .with_context(|| format!("Reading configuration from `{}`", config_file.display()))?;
     let runner_name = format!("{}-{}-{}", cfg.runner.registration.name, target.0, job);
 
-    ipc::send(ipc::RunnerMetadata {
+    let metadata = ipc::RunnerMetadata {
         slurm_job: job,
         runner_name: runner_name.clone(),
-    });
+    };
+    ipc::send(metadata).with_context(|| "Error serializing metadata to stdout")?;
 
     let base_labels = cfg.runner.registration.labels.iter().map(AsRef::as_ref);
     let target_labels = cfg.targets[&target].runner_labels.iter().map(AsRef::as_ref);
