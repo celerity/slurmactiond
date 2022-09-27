@@ -34,7 +34,7 @@ enum JobState {
 
 struct RunnerState {
     target: TargetId,
-    slurm_job: Option<slurm::JobId>,
+    slurm_job: slurm::JobId,
 }
 
 struct SchedulerState {
@@ -69,22 +69,25 @@ impl Scheduler {
         f(&mut self.state.lock().expect("Poisoned Mutex"))
     }
 
-    async fn complete_runner_job(&self, runner: slurm::RunnerJob) -> anyhow::Result<()> {
-        let mut runner = runner
+    async fn supervise_runner_job(
+        &self,
+        runner: slurm::RunnerJob,
+        spawn_target: TargetId,
+    ) -> anyhow::Result<()> {
+        let (metadata, runner) = runner
             .attach()
             .await
             .with_context(|| "Attaching to SLURM job")?;
-        let metadata = runner.take_metadata();
 
         self.with_state(|state| {
-            let state = (state.runners)
-                .get_mut(&metadata.runner_name)
-                .expect("Runner identifier is not known to scheduler");
-            assert!(
-                state.slurm_job.is_none(),
-                "Runner already connected to scheduler"
+            let previous = state.runners.insert(
+                metadata.runner_name.clone(),
+                RunnerState {
+                    slurm_job: metadata.slurm_job,
+                    target: spawn_target,
+                },
             );
-            state.slurm_job = Some(metadata.slurm_job);
+            assert!(previous.is_none(), "Runner already connected to scheduler")
         });
 
         let result = runner.wait().await.with_context(|| "Waiting for SLURM job");
@@ -107,11 +110,12 @@ impl Scheduler {
         config_path: &Path,
         config: &Config,
     ) -> Result<(), Error> {
-        let runner_job = slurm::RunnerJob::spawn(config_path, config, target)
+        let runner_job = slurm::RunnerJob::spawn(config_path, config, &target)
             .with_context(|| "Submitting job to SLURM")?;
         let handle = self.clone();
+        let spawn_target = target.clone();
         actix_web::rt::spawn(async move {
-            if let Err(e) = handle.complete_runner_job(runner_job).await {
+            if let Err(e) = handle.supervise_runner_job(runner_job, spawn_target).await {
                 error!("{e:#}");
             }
         });
@@ -158,22 +162,23 @@ impl Scheduler {
         config: &Config,
     ) -> Result<(), Error> {
         self.with_state(|state| {
-            let runner_slurm_job = state.runners.get(runner_name)
-                .map(|r| r.slurm_job.expect("A job was assigned to a runner by GitHub before the runner process became known to slurmactiond"));
+            let runner_state = state.runners.get(runner_name);
             let scheduler_job_state = state.jobs.get_mut(&job_id);
-            match (runner_slurm_job, scheduler_job_state) {
-                (Some(slurm_job), Some(job_state @ JobState::Queued)) => {
+            match (runner_state, scheduler_job_state) {
+                (Some(runner_state), Some(job_state @ JobState::Queued)) => {
                     info!(
                         "Workflow job {job_id} picked up by runner {runner_name} (SLURM #{})",
-                        slurm_job
+                        runner_state.slurm_job
                     );
-                    *job_state = JobState::InProgress(slurm_job);
+                    *job_state = JobState::InProgress(runner_state.slurm_job);
                     Ok(())
                 }
                 (Some(_slurm_job), Some(_job_state /* not Queued */)) => {
                     Err(Error::InvalidState(format!("Job {job_id} not queued")))
                 }
                 (None, Some(_job_state)) => {
+                    // TODO detect when job pickup happens before we receive runner metadata via IPC
+                    //  (which should never happen in practice)
                     warn!(
                         "Job {job_id} appears to have been picked up by a foreign runner, {}",
                         "removing it from tracking"
@@ -182,10 +187,10 @@ impl Scheduler {
                     // TODO now we have a runner scheduled with nothing to do
                     Ok(())
                 }
-                (Some(slurm_job), None) => {
+                (Some(runner_state), None) => {
                     warn!(
                         "Runner {runner_name} (SLURM #{}) has picked up foreign job {job_id}",
-                        slurm_job
+                        runner_state.slurm_job
                     );
                     let previous_state = state.runners.remove(runner_name).unwrap();
 

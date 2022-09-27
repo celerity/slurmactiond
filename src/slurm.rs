@@ -13,6 +13,7 @@ use tokio::process::{Child, Command};
 
 use crate::config::{Config, TargetId};
 use crate::ipc;
+use crate::ipc::RunnerMetadata;
 use crate::util::{ChildStream, ChildStreamMux, ResultSuccessExt as _};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
@@ -77,14 +78,12 @@ impl RunnerJobState {
     }
 }
 
-#[must_use]
 pub struct RunnerJob {
     state: RunnerJobState,
 }
 
 #[must_use]
 pub struct AttachedRunnerJob {
-    metadata: Option<ipc::RunnerMetadata>,
     state: RunnerJobState,
 }
 
@@ -143,15 +142,12 @@ impl RunnerJob {
         })
     }
 
-    pub async fn attach(mut self) -> anyhow::Result<AttachedRunnerJob> {
+    pub async fn attach(mut self) -> anyhow::Result<(RunnerMetadata, AttachedRunnerJob)> {
         loop {
             match self.state.next_message().await? {
                 Some(ipc::Envelope::Log(entry)) => entry.log(),
                 Some(ipc::Envelope::Metadata(metadata)) => {
-                    return Ok(AttachedRunnerJob {
-                        state: self.state,
-                        metadata: Some(metadata),
-                    })
+                    return Ok((metadata, AttachedRunnerJob { state: self.state }))
                 }
                 None => {
                     if let Err(e) = self.state.wait().await {
@@ -165,12 +161,6 @@ impl RunnerJob {
 }
 
 impl AttachedRunnerJob {
-    pub fn take_metadata(&mut self) -> ipc::RunnerMetadata {
-        self.metadata
-            .take()
-            .expect("AttachedRunnerJob metadata already taken")
-    }
-
     pub async fn wait(mut self) -> anyhow::Result<ExitStatus> {
         loop {
             match self.state.next_message().await? {
