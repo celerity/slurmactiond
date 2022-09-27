@@ -98,9 +98,9 @@ async fn unregister_instance(
         .args(&["remove", "--token", &token.0])
         .output_stream()?
         .log_output("config.sh")
-        .await?;
-    // since this is a cleanup task, we don't require a zero exit code
-    Ok(())
+        .await
+        // config.sh will print an error message if no runner was registered but will exit with 0
+        .and_successful()
 }
 
 async fn wait_child(child: &mut tokio::process::Child) -> anyhow::Result<ExitStatus> {
@@ -169,8 +169,6 @@ async fn unpack_tar_gz(tarball: &Path, into_dir: &Path) -> anyhow::Result<()> {
 pub async fn run(config_file: &Path, target: TargetId, job: slurm::JobId) -> anyhow::Result<()> {
     const API_ATTEMPTS: u32 = 3;
     const API_COOLDOWN: Duration = Duration::from_secs(30);
-    const LISTEN_ATTEMPTS: u32 = 5;
-    const LISTEN_COOLDOWN: Duration = Duration::from_secs(10);
 
     let cfg = Config::read_from_toml_file(config_file)
         .with_context(|| format!("Reading configuration from `{}`", config_file.display()))?;
@@ -235,18 +233,25 @@ pub async fn run(config_file: &Path, target: TargetId, job: slurm::JobId) -> any
     let registration_token = async_retry_after(API_COOLDOWN, API_ATTEMPTS, || {
         github::generate_runner_registration_token(&cfg.github.entity, &cfg.github.api_token)
     })
-    .await
-    .with_context(|| "Error generating GitHub Runner Registration Token")?;
+        .await
+        .with_context(|| "Error generating GitHub Runner Registration Token")?;
 
-    // there might be a left-over runner registration from a task that didn't exit successfully,
-    // try unregistering it. This will not fail on a non-zero exit code since most of the time,
-    // there will be no registered runner present.
-    unregister_instance(&work_dir.path, &registration_token)
+    // There might be a left-over runner registration from a task that didn't exit successfully,
+    // try unregistering it. This can fail if GitHub still views the previously occupying runner
+    // as being connected or active in a job.
+    info!("Unregistering previous runner if present");
+    const UNREGISTER_COOLDOWN: Duration = Duration::from_secs(60);
+    const UNREGISTER_ATTEMPTS: u32 = 10;
+    async_retry_after(UNREGISTER_COOLDOWN, UNREGISTER_ATTEMPTS, || {
+        unregister_instance(&work_dir.path, &registration_token)
+    })
         .await
         .with_context(|| "Error unregistering previous runner")?;
 
     info!("Registering runner {runner_name}");
-    async_retry_after(API_COOLDOWN, API_ATTEMPTS, || {
+    const REGISTER_COOLDOWN: Duration = Duration::from_secs(30);
+    const REGISTER_ATTEMPTS: u32 = 3;
+    async_retry_after(REGISTER_COOLDOWN, REGISTER_ATTEMPTS, || {
         register_instance(
             &work_dir.path,
             &cfg.github.entity,
@@ -255,16 +260,30 @@ pub async fn run(config_file: &Path, target: TargetId, job: slurm::JobId) -> any
             &all_labels,
         )
     })
-    .await
-    .with_context(|| "Error configuring new Actions Runner")?;
+        .await
+        .with_context(|| "Error configuring new Actions Runner")?;
 
     info!("Starting runner {runner_name}");
-    async_retry_after(LISTEN_COOLDOWN, LISTEN_ATTEMPTS, || {
-        run_instance(&work_dir.path, &cfg.runner)
-    })
-    .await
-    .with_context(|| "Error while executing Actions Runner")?;
+    // We can't re-try `./run.sh`, because the runner will perpetually appear connected to GitHub.
+    // TODO re-register and, if necessary, re-install the runner if this happens. We would ideally
+    //  detect this condition on the headnode and re-spawn the SLURM job altogether if necessary,
+    //  because we will also run into the job pick-up timeout if a foreign runner steals "our" job.
+    let run_result = run_instance(&work_dir.path, &cfg.runner)
+        .await
+        .with_context(|| "Error while executing Actions Runner");
 
-    info!("Runner has exited normally");
-    Ok(())
+    match run_result {
+        Ok(_) => info!("Runner has exited normally"),
+        Err(_) => {
+            // best-effort cleanup to bring GitHub's world view into sync, if this fails, we will
+            // re-try before registering another runner from this directory
+            let cleanup_result = unregister_instance(&work_dir.path, &registration_token)
+                .await
+                .with_context(|| "Error unregistering failed runner");
+            if let Err(cleanup_err) = cleanup_result {
+                warn!("{cleanup_err:#}");
+            }
+        }
+    }
+    run_result
 }

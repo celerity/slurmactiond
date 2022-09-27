@@ -1,4 +1,4 @@
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use std::fmt::{self, Display, Formatter};
 use std::future::Future;
 use std::io;
@@ -181,7 +181,7 @@ where
         match f().await {
             Ok(item) => return Ok(item),
             Err(e) => {
-                error!("{}", e);
+                warn!("{}", e);
                 attempt += 1;
                 if attempt >= max_attempts {
                     return Err(anyhow::Error::from(e)
@@ -190,6 +190,6 @@ where
             }
         }
         tokio::time::sleep(delay).await;
-        info!("Retrying ({}/{})", attempt, max_attempts - 1);
+        info!("Retrying ({}/{})", attempt + 1, max_attempts);
     }
 }
