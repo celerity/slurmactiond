@@ -2,7 +2,6 @@ use crate::config::{Config, TargetId};
 use crate::{github, slurm};
 use anyhow::Context as _;
 use log::{debug, error, info, warn};
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -79,25 +78,24 @@ impl Scheduler {
             .await
             .with_context(|| "Attaching to SLURM job")?;
 
-        self.with_state(|state| {
-            let previous = state.runners.insert(
-                metadata.runner_name.clone(),
-                RunnerState {
-                    slurm_job: metadata.slurm_job,
-                    target: spawn_target,
-                },
-            );
-            assert!(previous.is_none(), "Runner already connected to scheduler")
-        });
+        let previous_state = {
+            let key = metadata.runner_name.clone();
+            let value = RunnerState {
+                slurm_job: metadata.slurm_job,
+                target: spawn_target,
+            };
+            self.with_state(|state| state.runners.insert(key, value))
+        };
+        assert!(
+            previous_state.is_none(),
+            "Runner already connected to scheduler"
+        );
 
         let result = runner.wait().await.with_context(|| "Waiting for SLURM job");
 
         // remove runner independent of job success
-        self.with_state(|state| {
-            (state.runners)
-                .remove(&metadata.runner_name)
-                .expect("Runner has not been removed from scheduler state")
-        });
+        self.with_state(|state| state.runners.remove(&metadata.runner_name))
+            .expect("Runner has not been removed from scheduler state");
 
         info!("SLURM job exited with status {}", result?);
 
@@ -109,7 +107,7 @@ impl Scheduler {
         target: &TargetId,
         config_path: &Path,
         config: &Config,
-    ) -> Result<(), Error> {
+    ) -> anyhow::Result<()> {
         let runner_job = slurm::RunnerJob::spawn(config_path, config, &target)
             .with_context(|| "Submitting job to SLURM")?;
         let handle = self.clone();
@@ -129,15 +127,12 @@ impl Scheduler {
         config_path: &Path,
         config: &Config,
     ) -> Result<(), Error> {
-        self.with_state(|state| match state.jobs.entry(job_id) {
-            Entry::Occupied(_) => Err(Error::InvalidState(format!(
-                "Job {job_id} is already enqueued"
-            ))),
-            Entry::Vacant(entry) => {
-                entry.insert(JobState::Queueing);
-                Ok(())
-            }
-        })?;
+        let queued_before = self.with_state(|state| state.jobs.insert(job_id, JobState::Queueing));
+        if queued_before.is_some() {
+            return Err(Error::InvalidState(format!(
+                "Job {job_id} is already queued"
+            )));
+        }
 
         if let Some(target) = match_target(&config, &labels) {
             debug!("Matched runner labels {labels:?} to target {}", job_id.0);
@@ -161,49 +156,79 @@ impl Scheduler {
         config_path: &Path,
         config: &Config,
     ) -> Result<(), Error> {
-        self.with_state(|state| {
+        enum Transition {
+            RunnerPickedUpQueuedJob {
+                runner_slurm_job: slurm::JobId,
+            },
+            RunnerStoleForeignJob {
+                runner_slurm_job: slurm::JobId,
+                respawn_target: TargetId,
+            },
+            ForeignRunnerStoleQueuedJob,
+            ForeignRunnerPickedUpForeignJob,
+            JobNotQueued,
+        }
+
+        let transition = self.with_state(|state| {
             let runner_state = state.runners.get(runner_name);
             let scheduler_job_state = state.jobs.get_mut(&job_id);
             match (runner_state, scheduler_job_state) {
                 (Some(runner_state), Some(job_state @ JobState::Queued)) => {
-                    info!(
-                        "Workflow job {job_id} picked up by runner {runner_name} (SLURM #{})",
-                        runner_state.slurm_job
-                    );
                     *job_state = JobState::InProgress(runner_state.slurm_job);
-                    Ok(())
+                    Transition::RunnerPickedUpQueuedJob {
+                        runner_slurm_job: runner_state.slurm_job,
+                    }
                 }
-                (Some(_slurm_job), Some(_job_state /* not Queued */)) => {
-                    Err(Error::InvalidState(format!("Job {job_id} not queued")))
+                (Some(_), Some(JobState::Queueing | JobState::InProgress(_))) => {
+                    Transition::JobNotQueued
                 }
-                (None, Some(_job_state)) => {
-                    // TODO detect when job pickup happens before we receive runner metadata via IPC
-                    //  (which should never happen in practice)
-                    warn!(
-                        "Job {job_id} appears to have been picked up by a foreign runner, {}",
-                        "removing it from tracking"
-                    );
+                (None, Some(_)) => {
                     state.jobs.remove(&job_id);
-                    // TODO now we have a runner scheduled with nothing to do
-                    Ok(())
+                    Transition::ForeignRunnerStoleQueuedJob
                 }
-                (Some(runner_state), None) => {
-                    warn!(
-                        "Runner {runner_name} (SLURM #{}) has picked up foreign job {job_id}",
-                        runner_state.slurm_job
-                    );
-                    let previous_state = state.runners.remove(runner_name).unwrap();
-
-                    info!("Launching a replacement SLURM job for workflow job {job_id}");
-                    self.schedule(&previous_state.target, config_path, config)?;
-                    Ok(())
-                }
-                (None, None) => {
-                    // Foreign job was picked up by a foreign runner - this is expected.
-                    Ok(())
-                }
+                (Some(runner_state), None) => Transition::RunnerStoleForeignJob {
+                    runner_slurm_job: runner_state.slurm_job,
+                    respawn_target: runner_state.target.clone(),
+                },
+                (None, None) => Transition::ForeignRunnerPickedUpForeignJob,
             }
-        })
+        });
+
+        match transition {
+            Transition::RunnerPickedUpQueuedJob { runner_slurm_job } => {
+                info!(
+                    "Workflow job {job_id} picked up by runner {runner_name} (SLURM #{})",
+                    runner_slurm_job
+                );
+                Ok(())
+            }
+            Transition::RunnerStoleForeignJob {
+                runner_slurm_job,
+                respawn_target,
+            } => {
+                warn!(
+                    "Runner {runner_name} (SLURM #{}) has picked up foreign job {job_id}",
+                    runner_slurm_job
+                );
+                info!("Launching a replacement SLURM job for workflow job {job_id}");
+                self.schedule(&respawn_target, config_path, config)
+                    .map_err(Error::Failed)
+            }
+            Transition::ForeignRunnerStoleQueuedJob => {
+                // TODO detect when job pickup happens before we receive runner metadata via IPC
+                //  (which should never happen in practice)
+                warn!("Job {job_id} was picked up by a foreign runner, removed it from tracking");
+                // TODO now we have a runner scheduled with nothing to do
+                Ok(())
+            }
+            Transition::ForeignRunnerPickedUpForeignJob => {
+                // This is expected.
+                Ok(())
+            }
+            Transition::JobNotQueued => {
+                Err(Error::InvalidState(format!("Job {job_id} not queued")))
+            }
+        }
     }
 
     pub fn job_completed(&self, job_id: github::WorkflowJobId) {
