@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::github;
 
@@ -31,7 +31,7 @@ impl SlurmConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Hash, PartialEq, Eq, Clone)]
+#[derive(Debug, Serialize, Deserialize, Hash, PartialEq, Eq, Clone)]
 #[serde(transparent)]
 pub struct TargetId(pub String);
 

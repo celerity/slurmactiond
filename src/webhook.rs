@@ -3,16 +3,17 @@ use std::fmt::{Debug, Display, Formatter};
 use std::path::{Path, PathBuf};
 
 use actix_web::error::ParseError;
-use actix_web::http::header::{Header, HeaderName, HeaderValue, TryIntoHeaderValue};
+use actix_web::http::header::{ContentType, Header, HeaderName, HeaderValue, TryIntoHeaderValue};
 use actix_web::http::StatusCode;
-use actix_web::{web, App, HttpMessage, HttpServer, ResponseError};
+use actix_web::{web, App, HttpMessage, HttpResponse, HttpServer, ResponseError};
 use anyhow::Context as _;
+use handlebars::Handlebars;
 use log::{debug, error};
 use serde::Deserialize;
 
-use crate::github::{WorkflowRunId, WorkflowJobId};
+use crate::config::Config;
+use crate::github::{WorkflowJobId, WorkflowRunId};
 use crate::scheduler::{self, Scheduler};
-use crate::Config;
 
 type StaticContent = (&'static str, StatusCode);
 type StaticResult = actix_web::Result<StaticContent>;
@@ -85,6 +86,7 @@ struct SharedData {
     config_path: PathBuf,
     config: Config,
     scheduler: Scheduler,
+    handlebars: Handlebars<'static>,
 }
 
 async fn workflow_job_event(data: &SharedData, payload: &WorkflowJobPayload) -> StaticResult {
@@ -92,18 +94,19 @@ async fn workflow_job_event(data: &SharedData, payload: &WorkflowJobPayload) -> 
         config_path,
         config,
         scheduler,
+        ..
     } = data;
     let WorkflowJobPayload {
         action,
         workflow_job:
-        WorkflowJob {
-            run_id,
-            job_id,
-            name: workflow_name,
-            labels: job_labels,
-            runner_name,
-            ..
-        },
+            WorkflowJob {
+                run_id,
+                job_id,
+                name: workflow_name,
+                labels: job_labels,
+                runner_name,
+                ..
+            },
     } = payload;
 
     debug!("Workflow job {job_id} of run {run_id} ({workflow_name}) is {action:?}");
@@ -217,22 +220,70 @@ async fn webhook_event(
     }
 }
 
+const INDEX_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>slurmactiond</title>
+</head>
+<body>
+    <h1>slurmactiond</h1>
+    <h2>Tracked Workflow Jobs</h2>
+    <ul>
+    {{#each jobs}}
+        <li>{{@key}}:
+        {{~#if InProgress}}In Progress on SLURM job {{InProgress}}
+        {{~else}}{{this}}
+        {{~/if}}</li>
+    {{/each}}
+    </ul>
+    <h2>Active Runners</h2>
+    <ul>
+    {{#each runners}}
+        <li>{{@key}} as SLURM job {{this.slurm_job}}</li>
+    {{/each}}
+    </ul>
+</body>
+</html>
+"#;
+
+#[actix_web::get("/")]
+async fn index(data: web::Data<SharedData>) -> HttpResponse {
+    let html = data
+        .handlebars
+        .render("index", &data.scheduler.snapshot_state())
+        .expect("Error rendering index template");
+    HttpResponse::build(StatusCode::OK)
+        .content_type(ContentType::html())
+        .body(html)
+}
+
 #[actix_web::main]
 pub async fn main(config_file: &Path) -> anyhow::Result<()> {
     let config = Config::read_from_toml_file(config_file)
         .with_context(|| format!("Reading configuration from `{}`", config_file.display()))?;
+
+    let mut handlebars = Handlebars::new();
+    handlebars
+        .register_template_string("index", INDEX_HTML)
+        .unwrap();
 
     let bind_address = config.http.bind.clone();
     let data = web::Data::new(SharedData {
         config_path: config_file.to_owned(),
         config,
         scheduler: Scheduler::new(),
+        handlebars,
     });
 
-    HttpServer::new(move || App::new().app_data(data.clone()).service(webhook_event))
-        .bind(bind_address)?
-        .run()
-        .await?;
+    HttpServer::new(move || {
+        App::new()
+            .app_data(data.clone())
+            .service(index)
+            .service(webhook_event)
+    })
+    .bind(bind_address)?
+    .run()
+    .await?;
     Ok(())
 }
 
@@ -255,4 +306,42 @@ fn test_deserialize_payload() {
             },
         }
     )
+}
+
+#[test]
+fn test_render_index() {
+    use crate::config;
+    use crate::github::WorkflowJobId;
+    use crate::scheduler::{JobState, RunnerState, SchedulerState};
+    use crate::slurm;
+    use std::collections::HashMap;
+
+    let mut handlebars = Handlebars::new();
+    handlebars
+        .register_template_string("index", INDEX_HTML)
+        .unwrap();
+    let state = SchedulerState {
+        jobs: HashMap::from([
+            (WorkflowJobId(123), JobState::Queueing),
+            (WorkflowJobId(456), JobState::Queued),
+            (WorkflowJobId(789), JobState::InProgress(slurm::JobId(999))),
+        ]),
+        runners: HashMap::from([
+            (
+                "runner-1".to_owned(),
+                RunnerState {
+                    target: config::TargetId("target".to_string()),
+                    slurm_job: slurm::JobId(999),
+                },
+            ),
+            (
+                "runner-2".to_owned(),
+                RunnerState {
+                    target: config::TargetId("target".to_string()),
+                    slurm_job: slurm::JobId(1000),
+                },
+            ),
+        ]),
+    };
+    handlebars.render("index", &state).unwrap();
 }

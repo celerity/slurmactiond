@@ -233,8 +233,8 @@ pub async fn run(config_file: &Path, target: TargetId, job: slurm::JobId) -> any
     let registration_token = async_retry_after(API_COOLDOWN, API_ATTEMPTS, || {
         github::generate_runner_registration_token(&cfg.github.entity, &cfg.github.api_token)
     })
-        .await
-        .with_context(|| "Error generating GitHub Runner Registration Token")?;
+    .await
+    .with_context(|| "Error generating GitHub Runner Registration Token")?;
 
     // There might be a left-over runner registration from a task that didn't exit successfully,
     // try unregistering it. This can fail if GitHub still views the previously occupying runner
@@ -245,8 +245,8 @@ pub async fn run(config_file: &Path, target: TargetId, job: slurm::JobId) -> any
     async_retry_after(UNREGISTER_COOLDOWN, UNREGISTER_ATTEMPTS, || {
         unregister_instance(&work_dir.path, &registration_token)
     })
-        .await
-        .with_context(|| "Error unregistering previous runner")?;
+    .await
+    .with_context(|| "Error unregistering previous runner")?;
 
     info!("Registering runner {runner_name}");
     const REGISTER_COOLDOWN: Duration = Duration::from_secs(30);
@@ -260,8 +260,8 @@ pub async fn run(config_file: &Path, target: TargetId, job: slurm::JobId) -> any
             &all_labels,
         )
     })
-        .await
-        .with_context(|| "Error configuring new Actions Runner")?;
+    .await
+    .with_context(|| "Error configuring new Actions Runner")?;
 
     info!("Starting runner {runner_name}");
     // We can't re-try `./run.sh`, because the runner will perpetually appear connected to GitHub.

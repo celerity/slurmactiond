@@ -9,8 +9,6 @@ use clap::{Parser, Subcommand};
 use log::error;
 use nix::unistd::isatty;
 
-use config::Config;
-
 use crate::config::TargetId;
 
 mod config;

@@ -2,6 +2,7 @@ use crate::config::{Config, TargetId};
 use crate::{github, slurm};
 use anyhow::Context as _;
 use log::{debug, error, info, warn};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -24,21 +25,23 @@ fn match_target<'c>(config: &'c Config, labels: &[String]) -> Option<&'c TargetI
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum JobState {
+#[derive(Clone, Serialize, Debug, PartialEq, Eq)]
+pub enum JobState {
     Queueing,
     Queued,
     InProgress(slurm::JobId),
 }
 
-struct RunnerState {
-    target: TargetId,
-    slurm_job: slurm::JobId,
+#[derive(Clone, Serialize)]
+pub struct RunnerState {
+    pub target: TargetId,
+    pub slurm_job: slurm::JobId,
 }
 
-struct SchedulerState {
-    jobs: HashMap<github::WorkflowJobId, JobState>,
-    runners: HashMap<String, RunnerState>,
+#[derive(Clone, Serialize)]
+pub struct SchedulerState {
+    pub jobs: HashMap<github::WorkflowJobId, JobState>,
+    pub runners: HashMap<String, RunnerState>,
 }
 
 #[derive(Clone)]
@@ -234,5 +237,9 @@ impl Scheduler {
     pub fn job_completed(&self, job_id: github::WorkflowJobId) {
         // It's acceptable for job_id to be unknown in case it's from a foreign job
         self.with_state(|state| state.jobs.remove(&job_id));
+    }
+
+    pub fn snapshot_state(&self) -> SchedulerState {
+        self.with_state(|state| state.clone())
     }
 }
