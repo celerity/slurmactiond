@@ -71,7 +71,7 @@ pub fn parse(json: &str) -> anyhow::Result<Envelope> {
 
 pub fn send(metadata: RunnerMetadata) -> anyhow::Result<()> {
     let envelope = Envelope::Metadata(metadata);
-    let mut stdout = std::io::stdout();
+    let mut stdout = std::io::stdout().lock();
     serde_json::to_writer(&mut stdout, &envelope)?;
     stdout.write(b"\n")?;
     Ok(())
