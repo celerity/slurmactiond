@@ -10,7 +10,7 @@ use anyhow::Context as _;
 use log::{debug, error};
 use serde::Deserialize;
 
-use crate::github::{WorkflowId, WorkflowJobId};
+use crate::github::{WorkflowRunId, WorkflowJobId};
 use crate::scheduler::{self, Scheduler};
 use crate::Config;
 
@@ -67,9 +67,8 @@ enum WorkflowStatus {
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
 struct WorkflowJob {
+    run_id: WorkflowRunId,
     #[serde(rename = "id")]
-    workflow_id: WorkflowId,
-    #[serde(rename = "run_id")]
     job_id: WorkflowJobId,
     name: String,
     labels: Vec<String>,
@@ -98,8 +97,8 @@ async fn workflow_job_event(data: &SharedData, payload: &WorkflowJobPayload) -> 
         action,
         workflow_job:
         WorkflowJob {
+            run_id,
             job_id,
-            workflow_id,
             name: workflow_name,
             labels: job_labels,
             runner_name,
@@ -107,7 +106,7 @@ async fn workflow_job_event(data: &SharedData, payload: &WorkflowJobPayload) -> 
         },
     } = payload;
 
-    debug!("Workflow job {job_id} of workflow {workflow_id} ({workflow_name}) is {action:?}");
+    debug!("Workflow job {job_id} of run {run_id} ({workflow_name}) is {action:?}");
 
     let runner_name = runner_name
         .as_ref()
@@ -248,10 +247,11 @@ fn test_deserialize_payload() {
         WorkflowJobPayload {
             action: InProgress,
             workflow_job: WorkflowJob {
-                workflow_id: 2832853555,
-                job_id: 940463255,
+                run_id: WorkflowRunId(940463255),
+                job_id: WorkflowJobId(2832853555),
                 name: String::from("Test workflow"),
                 labels: Vec::from(["gpu", "db-app", "dc-03"].map(String::from)),
+                runner_name: Some("my runner".to_owned()),
             },
         }
     )

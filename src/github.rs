@@ -11,21 +11,23 @@ use log::debug;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+// A workflow _run_ refers to a collection of jobs, created by a trigger.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct WorkflowJobId(pub u64);
+pub struct WorkflowRunId(pub u64);
 
-impl Display for WorkflowJobId {
+impl Display for WorkflowRunId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
+// A workflow _job_ identifies the unit of work that will be picked up by a runner.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct WorkflowId(pub u64);
+pub struct WorkflowJobId(pub u64);
 
-impl Display for WorkflowId {
+impl Display for WorkflowJobId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
