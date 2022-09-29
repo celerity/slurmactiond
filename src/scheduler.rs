@@ -3,6 +3,7 @@ use crate::{github, slurm};
 use anyhow::Context as _;
 use log::{debug, error, info, warn};
 use serde::Serialize;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -26,9 +27,8 @@ fn match_target<'c>(config: &'c Config, labels: &[String]) -> Option<&'c TargetI
 }
 
 #[derive(Clone, Serialize, Debug, PartialEq, Eq)]
-pub enum JobState {
-    Queueing,
-    Queued,
+pub enum WorkflowJobState {
+    Pending,
     InProgress(slurm::JobId),
 }
 
@@ -40,7 +40,7 @@ pub struct RunnerState {
 
 #[derive(Clone, Serialize)]
 pub struct SchedulerState {
-    pub jobs: HashMap<github::WorkflowJobId, JobState>,
+    pub jobs: HashMap<github::WorkflowJobId, WorkflowJobState>,
     pub runners: HashMap<String, RunnerState>,
 }
 
@@ -130,21 +130,24 @@ impl Scheduler {
         config_path: &Path,
         config: &Config,
     ) -> Result<(), Error> {
-        let queued_before = self.with_state(|state| state.jobs.insert(job_id, JobState::Queueing));
-        if queued_before.is_some() {
-            return Err(Error::InvalidState(format!(
-                "Job {job_id} is already queued"
-            )));
-        }
-
         if let Some(target) = match_target(&config, &labels) {
             debug!("Matched runner labels {labels:?} to target {}", job_id.0);
 
+            self.with_state(|state| {
+                // like state.try_insert(), but stable
+                match state.jobs.entry(job_id) {
+                    Entry::Occupied(_) => Err(Error::InvalidState(format!(
+                        "Workflow job {job_id} is already queued"
+                    ))),
+                    Entry::Vacant(entry) => {
+                        entry.insert(WorkflowJobState::Pending);
+                        Ok(())
+                    }
+                }
+            })?;
+
             info!("Launching SLURM job for workflow job {job_id}");
             self.schedule(target, config_path, config)?;
-
-            let replaced = self.with_state(|state| state.jobs.insert(job_id, JobState::Queued));
-            assert_eq!(replaced, Some(JobState::Queueing));
         } else {
             debug!("Runner labels {labels:?} do not match any target");
         }
@@ -169,21 +172,21 @@ impl Scheduler {
             },
             ForeignRunnerStoleQueuedJob,
             ForeignRunnerPickedUpForeignJob,
-            JobNotQueued,
+            JobNotPending,
         }
 
         let transition = self.with_state(|state| {
             let runner_state = state.runners.get(runner_name);
             let scheduler_job_state = state.jobs.get_mut(&job_id);
             match (runner_state, scheduler_job_state) {
-                (Some(runner_state), Some(job_state @ JobState::Queued)) => {
-                    *job_state = JobState::InProgress(runner_state.slurm_job);
+                (Some(runner_state), Some(job_state @ WorkflowJobState::Pending)) => {
+                    *job_state = WorkflowJobState::InProgress(runner_state.slurm_job);
                     Transition::RunnerPickedUpQueuedJob {
                         runner_slurm_job: runner_state.slurm_job,
                     }
                 }
-                (Some(_), Some(JobState::Queueing | JobState::InProgress(_))) => {
-                    Transition::JobNotQueued
+                (Some(_), Some(WorkflowJobState::InProgress(_))) => {
+                    Transition::JobNotPending
                 }
                 (None, Some(_)) => {
                     state.jobs.remove(&job_id);
@@ -228,8 +231,8 @@ impl Scheduler {
                 // This is expected.
                 Ok(())
             }
-            Transition::JobNotQueued => {
-                Err(Error::InvalidState(format!("Job {job_id} not queued")))
+            Transition::JobNotPending => {
+                Err(Error::InvalidState(format!("Job {job_id} not pending")))
             }
         }
     }

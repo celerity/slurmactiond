@@ -312,7 +312,7 @@ fn test_deserialize_payload() {
 fn test_render_index() {
     use crate::config;
     use crate::github::WorkflowJobId;
-    use crate::scheduler::{JobState, RunnerState, SchedulerState};
+    use crate::scheduler::{WorkflowJobState, RunnerState, SchedulerState};
     use crate::slurm;
     use std::collections::HashMap;
 
@@ -322,9 +322,9 @@ fn test_render_index() {
         .unwrap();
     let state = SchedulerState {
         jobs: HashMap::from([
-            (WorkflowJobId(123), JobState::Queueing),
-            (WorkflowJobId(456), JobState::Queued),
-            (WorkflowJobId(789), JobState::InProgress(slurm::JobId(999))),
+            (WorkflowJobId(123), WorkflowJobState::Pending),
+            (WorkflowJobId(456), WorkflowJobState::Pending),
+            (WorkflowJobId(789), WorkflowJobState::InProgress(slurm::JobId(999))),
         ]),
         runners: HashMap::from([
             (
