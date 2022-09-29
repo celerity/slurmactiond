@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::io::{Result, Write};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RunnerMetadata {
     pub slurm_job: slurm::JobId,
     pub runner_name: String,

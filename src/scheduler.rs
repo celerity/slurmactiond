@@ -1,10 +1,12 @@
 use crate::config::{Config, TargetId};
+use crate::ipc::RunnerMetadata;
 use crate::{github, slurm};
 use anyhow::Context as _;
 use log::{debug, error, info, warn};
 use serde::Serialize;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -26,22 +28,45 @@ fn match_target<'c>(config: &'c Config, labels: &[String]) -> Option<&'c TargetI
     }
 }
 
+#[derive(Copy, Clone, Serialize, Debug, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct InternalRunnerId(pub u32);
+
+impl Display for InternalRunnerId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "R{}", self.0)
+    }
+}
+
 #[derive(Clone, Serialize, Debug, PartialEq, Eq)]
 pub enum WorkflowJobState {
     Pending,
-    InProgress(slurm::JobId),
+    InProgress(InternalRunnerId),
 }
 
 #[derive(Clone, Serialize)]
-pub struct RunnerState {
+pub enum RunnerState {
+    Queued,
+    Active(RunnerMetadata),
+}
+
+#[derive(Clone, Serialize)]
+pub struct RunnerInfo {
     pub target: TargetId,
-    pub slurm_job: slurm::JobId,
+    pub state: RunnerState,
+}
+
+struct SchedulerState {
+    jobs: HashMap<github::WorkflowJobId, WorkflowJobState>,
+    runners: HashMap<InternalRunnerId, RunnerInfo>,
+    rids_by_name: HashMap<String, InternalRunnerId>,
+    next_runner_id: InternalRunnerId,
 }
 
 #[derive(Clone, Serialize)]
-pub struct SchedulerState {
+pub struct SchedulerStateSnapshot {
     pub jobs: HashMap<github::WorkflowJobId, WorkflowJobState>,
-    pub runners: HashMap<String, RunnerState>,
+    pub runners: HashMap<InternalRunnerId, RunnerInfo>,
 }
 
 #[derive(Clone)]
@@ -63,6 +88,8 @@ impl Scheduler {
             state: Arc::new(Mutex::new(SchedulerState {
                 jobs: HashMap::new(),
                 runners: HashMap::new(),
+                rids_by_name: HashMap::new(),
+                next_runner_id: InternalRunnerId(0),
             })),
         }
     }
@@ -73,53 +100,76 @@ impl Scheduler {
 
     async fn supervise_runner_job(
         &self,
-        runner: slurm::RunnerJob,
-        spawn_target: TargetId,
+        runner_id: InternalRunnerId,
+        slurm_runner: slurm::RunnerJob,
     ) -> anyhow::Result<()> {
-        let (metadata, runner) = runner
+        let (metadata, slurm_runner) = slurm_runner
             .attach()
             .await
             .with_context(|| "Attaching to SLURM job")?;
 
-        let previous_state = {
-            let key = metadata.runner_name.clone();
-            let value = RunnerState {
-                slurm_job: metadata.slurm_job,
-                target: spawn_target,
-            };
-            self.with_state(|state| state.runners.insert(key, value))
-        };
-        assert!(
-            previous_state.is_none(),
-            "Runner already connected to scheduler"
-        );
+        self.with_state(|state| {
+            let info = state
+                .runners
+                .get_mut(&runner_id)
+                .expect("Unknown internal runner id");
+            assert!(matches!(info.state, RunnerState::Queued));
+            info.state = RunnerState::Active(metadata.clone());
 
-        let result = runner.wait().await.with_context(|| "Waiting for SLURM job");
+            let existing_by_name = state
+                .rids_by_name
+                .insert(metadata.runner_name.clone(), runner_id);
+            assert!(existing_by_name.is_none());
+        });
+
+        let result = slurm_runner
+            .wait()
+            .await
+            .with_context(|| "Waiting for SLURM job");
 
         // remove runner independent of job success
-        self.with_state(|state| state.runners.remove(&metadata.runner_name))
-            .expect("Runner has not been removed from scheduler state");
+        self.with_state(|state| {
+            (state.rids_by_name)
+                .remove(&metadata.runner_name)
+                .expect("Runner name vanished");
+            state
+                .runners
+                .remove(&runner_id)
+                .expect("Runner id vanished");
+        });
 
         info!("SLURM job exited with status {}", result?);
 
         Ok(())
     }
 
-    fn schedule(
+    fn spawn_new_runner(
         &self,
         target: &TargetId,
         config_path: &Path,
         config: &Config,
     ) -> anyhow::Result<()> {
-        let runner_job = slurm::RunnerJob::spawn(config_path, config, &target)
+        let runner_info = RunnerInfo {
+            target: target.clone(),
+            state: RunnerState::Queued,
+        };
+        let runner_id = self.with_state(|state| {
+            let runner_id = state.next_runner_id;
+            state.next_runner_id.0 += 1;
+            state.runners.insert(runner_id, runner_info);
+            runner_id
+        });
+
+        let slurm_runner = slurm::RunnerJob::spawn(config_path, config, &target)
             .with_context(|| "Submitting job to SLURM")?;
+
         let handle = self.clone();
-        let spawn_target = target.clone();
         actix_web::rt::spawn(async move {
-            if let Err(e) = handle.supervise_runner_job(runner_job, spawn_target).await {
+            if let Err(e) = handle.supervise_runner_job(runner_id, slurm_runner).await {
                 error!("{e:#}");
             }
-        });
+        }); // TODO manage JoinHandle in RunnerInfo
+
         Ok(())
     }
 
@@ -147,7 +197,7 @@ impl Scheduler {
             })?;
 
             info!("Launching SLURM job for workflow job {job_id}");
-            self.schedule(target, config_path, config)?;
+            self.spawn_new_runner(target, config_path, config)?;
         } else {
             debug!("Runner labels {labels:?} do not match any target");
         }
@@ -163,11 +213,9 @@ impl Scheduler {
         config: &Config,
     ) -> Result<(), Error> {
         enum Transition {
-            RunnerPickedUpQueuedJob {
-                runner_slurm_job: slurm::JobId,
-            },
+            RunnerPickedUpQueuedJob(InternalRunnerId),
             RunnerStoleForeignJob {
-                runner_slurm_job: slurm::JobId,
+                runner_id: InternalRunnerId,
                 respawn_target: TargetId,
             },
             ForeignRunnerStoleQueuedJob,
@@ -176,48 +224,44 @@ impl Scheduler {
         }
 
         let transition = self.with_state(|state| {
-            let runner_state = state.runners.get(runner_name);
-            let scheduler_job_state = state.jobs.get_mut(&job_id);
-            match (runner_state, scheduler_job_state) {
-                (Some(runner_state), Some(job_state @ WorkflowJobState::Pending)) => {
-                    *job_state = WorkflowJobState::InProgress(runner_state.slurm_job);
-                    Transition::RunnerPickedUpQueuedJob {
-                        runner_slurm_job: runner_state.slurm_job,
-                    }
+            let active_runner = (state.rids_by_name.get(runner_name))
+                .map(|rid| (rid, state.runners.get(rid).unwrap()))
+                .filter(|(_, info)| matches!(info.state, RunnerState::Active(_)));
+
+            let workflow_job_state = state.jobs.get_mut(&job_id);
+            match (active_runner, workflow_job_state) {
+                (Some((runner_id, _)), Some(job_state @ WorkflowJobState::Pending)) => {
+                    *job_state = WorkflowJobState::InProgress(*runner_id);
+                    Transition::RunnerPickedUpQueuedJob(*runner_id)
                 }
-                (Some(_), Some(WorkflowJobState::InProgress(_))) => {
-                    Transition::JobNotPending
-                }
+                (Some(..), Some(WorkflowJobState::InProgress(_))) => Transition::JobNotPending,
                 (None, Some(_)) => {
                     state.jobs.remove(&job_id);
                     Transition::ForeignRunnerStoleQueuedJob
                 }
-                (Some(runner_state), None) => Transition::RunnerStoleForeignJob {
-                    runner_slurm_job: runner_state.slurm_job,
-                    respawn_target: runner_state.target.clone(),
+                (Some((runner_id, runner_info)), None) => Transition::RunnerStoleForeignJob {
+                    runner_id: *runner_id,
+                    respawn_target: runner_info.target.clone(),
                 },
                 (None, None) => Transition::ForeignRunnerPickedUpForeignJob,
             }
         });
 
         match transition {
-            Transition::RunnerPickedUpQueuedJob { runner_slurm_job } => {
-                info!(
-                    "Workflow job {job_id} picked up by runner {runner_name} (SLURM #{})",
-                    runner_slurm_job
-                );
+            Transition::RunnerPickedUpQueuedJob(runner_id) => {
+                info!("Workflow job {job_id} picked up by runner {runner_id} ({runner_name})");
                 Ok(())
             }
             Transition::RunnerStoleForeignJob {
-                runner_slurm_job,
+                runner_id,
                 respawn_target,
             } => {
                 warn!(
-                    "Runner {runner_name} (SLURM #{}) has picked up foreign job {job_id}",
-                    runner_slurm_job
+                    "Runner {runner_id} ({runner_name}) has picked up foreign workflow job {}",
+                    job_id
                 );
                 info!("Launching a replacement SLURM job for workflow job {job_id}");
-                self.schedule(&respawn_target, config_path, config)
+                self.spawn_new_runner(&respawn_target, config_path, config)
                     .map_err(Error::Failed)
             }
             Transition::ForeignRunnerStoleQueuedJob => {
@@ -242,7 +286,10 @@ impl Scheduler {
         self.with_state(|state| state.jobs.remove(&job_id));
     }
 
-    pub fn snapshot_state(&self) -> SchedulerState {
-        self.with_state(|state| state.clone())
+    pub fn snapshot_state(&self) -> SchedulerStateSnapshot {
+        self.with_state(|state| SchedulerStateSnapshot {
+            jobs: state.jobs.clone(),
+            runners: state.runners.clone(),
+        })
     }
 }

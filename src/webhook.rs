@@ -312,7 +312,10 @@ fn test_deserialize_payload() {
 fn test_render_index() {
     use crate::config;
     use crate::github::WorkflowJobId;
-    use crate::scheduler::{WorkflowJobState, RunnerState, SchedulerState};
+    use crate::ipc::RunnerMetadata;
+    use crate::scheduler::{
+        InternalRunnerId, RunnerInfo, RunnerState, SchedulerStateSnapshot, WorkflowJobState,
+    };
     use crate::slurm;
     use std::collections::HashMap;
 
@@ -320,25 +323,31 @@ fn test_render_index() {
     handlebars
         .register_template_string("index", INDEX_HTML)
         .unwrap();
-    let state = SchedulerState {
+    let state = SchedulerStateSnapshot {
         jobs: HashMap::from([
             (WorkflowJobId(123), WorkflowJobState::Pending),
             (WorkflowJobId(456), WorkflowJobState::Pending),
-            (WorkflowJobId(789), WorkflowJobState::InProgress(slurm::JobId(999))),
+            (
+                WorkflowJobId(789),
+                WorkflowJobState::InProgress(InternalRunnerId(1)),
+            ),
         ]),
         runners: HashMap::from([
             (
-                "runner-1".to_owned(),
-                RunnerState {
+                InternalRunnerId(1),
+                RunnerInfo {
                     target: config::TargetId("target".to_string()),
-                    slurm_job: slurm::JobId(999),
+                    state: RunnerState::Active(RunnerMetadata {
+                        runner_name: "runner-1".to_owned(),
+                        slurm_job: slurm::JobId(999),
+                    }),
                 },
             ),
             (
-                "runner-2".to_owned(),
-                RunnerState {
+                InternalRunnerId(2),
+                RunnerInfo {
                     target: config::TargetId("target".to_string()),
-                    slurm_job: slurm::JobId(1000),
+                    state: RunnerState::Queued,
                 },
             ),
         ]),
