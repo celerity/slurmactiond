@@ -9,7 +9,9 @@ jobs:
   build-and-test:
     runs-on: [ self-hosted, slurm ]
     container:
-      image: 'slurmactiond-build:1.60'
+      image: 'slurmactiond-build:1.64'
+      volumes:
+        - sccache:/sccache
     steps:
       - uses: actions/checkout@v2
       - name: Check Formatting
