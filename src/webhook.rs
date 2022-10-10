@@ -249,7 +249,10 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
     <h2>Active Runners</h2>
     <ul>
     {{#each runners}}
-        <li>{{@key}} as SLURM job {{this.slurm_job}}</li>
+        <li>{{@key}} ({{this.target}}):
+        {{~#if state.Active}} Running as {{state.Active.runner_name}} (SLURM job {{state.Active.slurm_job}})
+        {{~else}} Queued
+        {{~/if}}</li>
     {{/each}}
     </ul>
 </body>
@@ -366,7 +369,7 @@ fn test_render_index() {
             (
                 InternalRunnerId(1),
                 RunnerInfo {
-                    target: config::TargetId("target".to_string()),
+                    target: config::TargetId("target-a".to_string()),
                     state: RunnerState::Active(RunnerMetadata {
                         runner_name: "runner-1".to_owned(),
                         slurm_job: slurm::JobId(999),
@@ -376,11 +379,11 @@ fn test_render_index() {
             (
                 InternalRunnerId(2),
                 RunnerInfo {
-                    target: config::TargetId("target".to_string()),
+                    target: config::TargetId("target-b".to_string()),
                     state: RunnerState::Queued,
                 },
             ),
         ]),
     };
-    handlebars.render("index", &state).unwrap();
+    println!("{}", handlebars.render("index", &state).unwrap());
 }
