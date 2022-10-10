@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>slurmactiond</title>
+    <style>body { font-family: sans-serif; }</style>
+</head>
+<body>
+    <h1>slurmactiond</h1>
+    <h2>Tracked Workflow Jobs</h2>
+    <ul>
+    {{#each jobs}}
+        <li><a href="{{url}}">{{@key}}</a> ({{name}}):
+        {{~#if state.InProgress}} In Progress on SLURM job {{state.InProgress}}
+        {{~else}} {{state}}
+        {{~/if}}</li>
+    {{/each}}
+    </ul>
+    <h2>Active Runners</h2>
+    <ul>
+    {{#each runners}}
+        <li>{{@key}} ({{this.target}}):
+        {{~#if state.Active}} Running as {{state.Active.runner_name}} (SLURM job {{state.Active.slurm_job}})
+        {{~else}} Queued
+        {{~/if}}</li>
+    {{/each}}
+    </ul>
+</body>
+</html>

@@ -230,35 +230,6 @@ async fn webhook_event(
     }
 }
 
-const INDEX_HTML: &str = r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-    <title>slurmactiond</title>
-</head>
-<body>
-    <h1>slurmactiond</h1>
-    <h2>Tracked Workflow Jobs</h2>
-    <ul>
-    {{#each jobs}}
-        <li><a href="{{url}}">{{@key}}</a> ({{name}}):
-        {{~#if state.InProgress}} In Progress on SLURM job {{state.InProgress}}
-        {{~else}} {{state}}
-        {{~/if}}</li>
-    {{/each}}
-    </ul>
-    <h2>Active Runners</h2>
-    <ul>
-    {{#each runners}}
-        <li>{{@key}} ({{this.target}}):
-        {{~#if state.Active}} Running as {{state.Active.runner_name}} (SLURM job {{state.Active.slurm_job}})
-        {{~else}} Queued
-        {{~/if}}</li>
-    {{/each}}
-    </ul>
-</body>
-</html>
-"#;
-
 #[actix_web::get("/")]
 async fn index(data: web::Data<SharedData>) -> HttpResponse {
     let html = data
@@ -277,7 +248,7 @@ pub async fn main(config_file: &Path) -> anyhow::Result<()> {
 
     let mut handlebars = Handlebars::new();
     handlebars
-        .register_template_string("index", INDEX_HTML)
+        .register_template_string("index", include_str!("../res/html/index.html"))
         .unwrap();
 
     let bind_address = config.http.bind.clone();
