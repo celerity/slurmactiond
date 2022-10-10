@@ -72,6 +72,8 @@ struct WorkflowJob {
     #[serde(rename = "id")]
     job_id: WorkflowJobId,
     name: String,
+    #[serde(rename = "html_url")]
+    url: String,
     labels: Vec<String>,
     runner_name: Option<String>,
 }
@@ -102,6 +104,7 @@ async fn workflow_job_event(data: &SharedData, payload: &WorkflowJobPayload) -> 
             WorkflowJob {
                 run_id,
                 job_id,
+                url: workflow_url,
                 name: workflow_name,
                 labels: job_labels,
                 runner_name,
@@ -116,7 +119,14 @@ async fn workflow_job_event(data: &SharedData, payload: &WorkflowJobPayload) -> 
         .ok_or_else(|| BadRequest("workflow_job.runner_name missing".to_owned()));
 
     let result = match action {
-        WorkflowStatus::Queued => scheduler.job_enqueued(*job_id, job_labels, config_path, config),
+        WorkflowStatus::Queued => scheduler.job_enqueued(
+            *job_id,
+            workflow_name,
+            workflow_url,
+            job_labels,
+            config_path,
+            config,
+        ),
         WorkflowStatus::InProgress => {
             scheduler.job_processing(*job_id, runner_name?.as_str(), config_path, config)
         }
@@ -230,9 +240,9 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
     <h2>Tracked Workflow Jobs</h2>
     <ul>
     {{#each jobs}}
-        <li>{{@key}}:
-        {{~#if InProgress}}In Progress on SLURM job {{InProgress}}
-        {{~else}}{{this}}
+        <li><a href="{{url}}">{{@key}}</a> ({{name}}):
+        {{~#if state.InProgress}} In Progress on SLURM job {{state.InProgress}}
+        {{~else}} {{state}}
         {{~/if}}</li>
     {{/each}}
     </ul>
@@ -301,6 +311,7 @@ fn test_deserialize_payload() {
                 run_id: WorkflowRunId(940463255),
                 job_id: WorkflowJobId(2832853555),
                 name: String::from("Test workflow"),
+                url: String::from("https://github.com/octo-org/example-workflow/runs/2832853555"),
                 labels: Vec::from(["gpu", "db-app", "dc-03"].map(String::from)),
                 runner_name: Some("my runner".to_owned()),
             },
@@ -314,7 +325,8 @@ fn test_render_index() {
     use crate::github::WorkflowJobId;
     use crate::ipc::RunnerMetadata;
     use crate::scheduler::{
-        InternalRunnerId, RunnerInfo, RunnerState, SchedulerStateSnapshot, WorkflowJobState,
+        InternalRunnerId, RunnerInfo, RunnerState, SchedulerStateSnapshot, WorkflowJobInfo,
+        WorkflowJobState,
     };
     use crate::slurm;
     use std::collections::HashMap;
@@ -325,11 +337,29 @@ fn test_render_index() {
         .unwrap();
     let state = SchedulerStateSnapshot {
         jobs: HashMap::from([
-            (WorkflowJobId(123), WorkflowJobState::Pending),
-            (WorkflowJobId(456), WorkflowJobState::Pending),
+            (
+                WorkflowJobId(123),
+                WorkflowJobInfo {
+                    name: "Job A".to_owned(),
+                    url: "https://github.com/octo-org/example-workflow/runs/1".to_owned(),
+                    state: WorkflowJobState::Pending,
+                },
+            ),
+            (
+                WorkflowJobId(456),
+                WorkflowJobInfo {
+                    name: "Job B".to_owned(),
+                    url: "https://github.com/octo-org/example-workflow/runs/2".to_owned(),
+                    state: WorkflowJobState::Pending,
+                },
+            ),
             (
                 WorkflowJobId(789),
-                WorkflowJobState::InProgress(InternalRunnerId(1)),
+                WorkflowJobInfo {
+                    name: "Job C".to_owned(),
+                    url: "https://github.com/octo-org/example-workflow/runs/3".to_owned(),
+                    state: WorkflowJobState::InProgress(InternalRunnerId(1)),
+                },
             ),
         ]),
         runners: HashMap::from([

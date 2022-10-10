@@ -44,6 +44,13 @@ pub enum WorkflowJobState {
     InProgress(InternalRunnerId),
 }
 
+#[derive(Clone, Serialize, Debug, PartialEq, Eq)]
+pub struct WorkflowJobInfo {
+    pub name: String,
+    pub url: String,
+    pub state: WorkflowJobState,
+}
+
 #[derive(Clone, Serialize)]
 pub enum RunnerState {
     Queued,
@@ -57,7 +64,7 @@ pub struct RunnerInfo {
 }
 
 struct SchedulerState {
-    jobs: HashMap<github::WorkflowJobId, WorkflowJobState>,
+    jobs: HashMap<github::WorkflowJobId, WorkflowJobInfo>,
     runners: HashMap<InternalRunnerId, RunnerInfo>,
     rids_by_name: HashMap<String, InternalRunnerId>,
     next_runner_id: InternalRunnerId,
@@ -65,7 +72,7 @@ struct SchedulerState {
 
 #[derive(Clone, Serialize)]
 pub struct SchedulerStateSnapshot {
-    pub jobs: HashMap<github::WorkflowJobId, WorkflowJobState>,
+    pub jobs: HashMap<github::WorkflowJobId, WorkflowJobInfo>,
     pub runners: HashMap<InternalRunnerId, RunnerInfo>,
 }
 
@@ -176,6 +183,8 @@ impl Scheduler {
     pub fn job_enqueued<'c>(
         &self,
         job_id: github::WorkflowJobId,
+        name: &str,
+        url: &str,
         labels: &[String],
         config_path: &Path,
         config: &Config,
@@ -190,7 +199,11 @@ impl Scheduler {
                         "Workflow job {job_id} is already queued"
                     ))),
                     Entry::Vacant(entry) => {
-                        entry.insert(WorkflowJobState::Pending);
+                        entry.insert(WorkflowJobInfo {
+                            name: name.to_owned(),
+                            url: url.to_owned(),
+                            state: WorkflowJobState::Pending,
+                        });
                         Ok(())
                     }
                 }
@@ -228,7 +241,7 @@ impl Scheduler {
                 .map(|rid| (rid, state.runners.get(rid).unwrap()))
                 .filter(|(_, info)| matches!(info.state, RunnerState::Active(_)));
 
-            let workflow_job_state = state.jobs.get_mut(&job_id);
+            let workflow_job_state = state.jobs.get_mut(&job_id).map(|info| &mut info.state);
             match (active_runner, workflow_job_state) {
                 (Some((runner_id, _)), Some(job_state @ WorkflowJobState::Pending)) => {
                     *job_state = WorkflowJobState::InProgress(*runner_id);
