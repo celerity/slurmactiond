@@ -12,7 +12,7 @@ use log::{debug, error};
 use serde::Deserialize;
 
 use crate::config::Config;
-use crate::github::{WorkflowJobId, WorkflowRunId};
+use crate::github::{WorkflowJob, WorkflowJobId, WorkflowRunId, WorkflowStatus};
 use crate::scheduler::{self, Scheduler};
 
 type StaticContent = (&'static str, StatusCode);
@@ -56,26 +56,6 @@ impl ResponseError for InternalServerError {
 fn internal_server_error(e: impl Display) -> InternalServerError {
     error!("Internal Server Error: {e:#}");
     InternalServerError
-}
-
-#[derive(Deserialize, Debug, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum WorkflowStatus {
-    Queued,
-    InProgress,
-    Completed,
-}
-
-#[derive(Deserialize, Debug, PartialEq, Eq)]
-struct WorkflowJob {
-    run_id: WorkflowRunId,
-    #[serde(rename = "id")]
-    job_id: WorkflowJobId,
-    name: String,
-    #[serde(rename = "html_url")]
-    url: String,
-    labels: Vec<String>,
-    runner_name: Option<String>,
 }
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
@@ -131,6 +111,7 @@ async fn workflow_job_event(data: &SharedData, payload: &WorkflowJobPayload) -> 
             scheduler.job_processing(*job_id, runner_name?.as_str(), config_path, config)
         }
         WorkflowStatus::Completed => Ok(scheduler.job_completed(*job_id)),
+        _ => Ok(()),
     };
     match result {
         Ok(()) => Ok(NO_CONTENT),
@@ -288,6 +269,7 @@ fn test_deserialize_payload() {
                 url: String::from("https://github.com/octo-org/example-workflow/runs/2832853555"),
                 labels: Vec::from(["gpu", "db-app", "dc-03"].map(String::from)),
                 runner_name: Some("my runner".to_owned()),
+                status: InProgress,
             },
         }
     )
@@ -307,7 +289,7 @@ fn test_render_index() {
 
     let mut handlebars = Handlebars::new();
     handlebars
-        .register_template_string("index", INDEX_HTML)
+        .register_template_string("index", include_str!("../res/html/index.html"))
         .unwrap();
     let state = SchedulerStateSnapshot {
         jobs: HashMap::from([

@@ -193,3 +193,46 @@ where
         info!("Retrying ({}/{})", attempt + 1, max_attempts);
     }
 }
+
+// Serde custom deserializer: Process an empty string literal as Option<String>::None
+// From https://github.com/serde-rs/serde/issues/1425#issuecomment-462282398
+pub fn empty_string_as_none<'de, D, T>(de: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    use serde::de::{Deserialize, IntoDeserializer};
+
+    let opt = Option::<String>::deserialize(de)?;
+    let opt = opt.as_ref().map(String::as_str);
+    match opt {
+        None | Some("") => Ok(None),
+        Some(s) => T::deserialize(s.into_deserializer()).map(Some),
+    }
+}
+
+// Concurrently map a function FnMut(I) -> Result<IntoIterator<T>, E> over an an IntoIterator<I>
+// and return the collected unordered Result<Vec<T>, E>.
+pub async fn async_map_unordered_and_flatten<I, J, M, F, T, E, V>(
+    into_iter: I,
+    map_fn: M,
+) -> Result<Vec<T>, E>
+where
+    I: IntoIterator<Item = J>,
+    M: FnMut(J) -> F,
+    F: Future<Output = Result<V, E>>,
+    V: IntoIterator<Item = T>,
+{
+    use futures_util::StreamExt as _;
+
+    const CONCURRENCY: usize = 4;
+    let mut vec = Vec::new();
+    let mut stream = futures_util::stream::iter(into_iter)
+        .map(map_fn)
+        .buffer_unordered(CONCURRENCY);
+    while let (Some(head), tail) = stream.into_future().await {
+        vec.extend(head?.into_iter());
+        stream = tail;
+    }
+    Ok(vec)
+}

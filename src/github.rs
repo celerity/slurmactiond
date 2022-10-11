@@ -4,6 +4,7 @@ use std::future::Future;
 use std::io;
 use thiserror::Error;
 
+use crate::util;
 use awc::error::HeaderValue;
 use awc::http::Method;
 use awc::{http::header, Client, SendClientRequest};
@@ -177,7 +178,7 @@ pub async fn locate_runner_tarball(platform: &str, api_token: &ApiToken) -> anyh
 }
 
 pub async fn download(url: &str, to: &mut dyn io::Write) -> anyhow::Result<()> {
-    use futures_util::stream::StreamExt;
+    use futures_util::stream::StreamExt as _;
     let mut stream = Client::new()
         .get(url)
         .append_header((header::USER_AGENT, USER_AGENT))
@@ -190,6 +191,164 @@ pub async fn download(url: &str, to: &mut dyn io::Write) -> anyhow::Result<()> {
             .with_context(|| "Error writing response to output")?;
     }
     Ok(())
+}
+
+#[derive(Deserialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowStatus {
+    Completed,
+    ActionRequired,
+    Cancelled,
+    Failure,
+    Neutral,
+    Skipped,
+    Stale,
+    Success,
+    TimedOut,
+    InProgress,
+    Queued,
+    Requested,
+    Waiting,
+}
+
+#[derive(Deserialize, Debug, PartialEq, Eq)]
+pub struct WorkflowJob {
+    pub run_id: WorkflowRunId,
+    #[serde(rename = "id")]
+    pub job_id: WorkflowJobId,
+    pub name: String,
+    #[serde(rename = "html_url")]
+    pub url: String,
+    pub labels: Vec<String>,
+    #[serde(deserialize_with = "util::empty_string_as_none")]
+    pub runner_name: Option<String>,
+    pub status: WorkflowStatus,
+}
+
+#[derive(Deserialize)]
+struct WorkflowJobsPayload {
+    jobs: Vec<WorkflowJob>,
+}
+
+async fn list_workflow_run_queued_jobs(
+    owner: &str,
+    repo: &str,
+    run: WorkflowRunId,
+    api_token: &ApiToken,
+) -> anyhow::Result<Vec<WorkflowJob>> {
+    let mut all_jobs = Vec::new();
+    for page in 1.. {
+        let payload: WorkflowJobsPayload = api_request(
+            &Method::GET,
+            &format!(
+                "{GITHUB}/repos/{owner}/{repo}/actions/runs/{run}/jobs?per_page=100&page={page}"
+            ),
+            api_token,
+        )
+        .await?
+        .json()
+        .await?;
+
+        if payload.jobs.is_empty() {
+            break;
+        }
+        all_jobs.extend(
+            payload
+                .jobs
+                .into_iter()
+                .filter(|job| job.status == WorkflowStatus::Queued),
+        );
+    }
+    Ok(all_jobs)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WorkflowRun {
+    #[serde(rename = "id")]
+    run_id: WorkflowRunId,
+}
+
+#[derive(Deserialize)]
+struct WorkflowRunsPayload {
+    workflow_runs: Vec<WorkflowRun>,
+}
+
+async fn list_repo_queued_workflow_runs(
+    org: &str,
+    repo: &str,
+    api_token: &ApiToken,
+) -> anyhow::Result<Vec<WorkflowRun>> {
+    let mut all_workflow_runs = Vec::new();
+    for page in 1.. {
+        let payload: WorkflowRunsPayload = api_request(
+            &Method::GET,
+            &format!(
+                "{GITHUB}/repos/{org}/{repo}/actions/runs?status=queued&per_page=100&page={page}"
+            ),
+            api_token,
+        )
+        .await?
+        .json()
+        .await?;
+
+        if payload.workflow_runs.is_empty() {
+            break;
+        }
+        all_workflow_runs.extend(payload.workflow_runs.into_iter());
+    }
+    Ok(all_workflow_runs)
+}
+
+#[derive(Deserialize)]
+struct Repository {
+    name: String,
+}
+
+async fn list_org_repos(org: &str, api_token: &ApiToken) -> anyhow::Result<Vec<String>> {
+    let mut all_repos = Vec::new();
+    for page in 1.. {
+        let payload: Vec<Repository> = api_request(
+            &Method::GET,
+            &format!("{GITHUB}/orgs/{org}/repos?per_page=100&page={page}"),
+            api_token,
+        )
+        .await?
+        .json()
+        .await?;
+
+        if payload.is_empty() {
+            break;
+        }
+        all_repos.extend(payload.into_iter().map(|repo| repo.name));
+    }
+    Ok(all_repos)
+}
+
+pub async fn list_all_pending_workflow_jobs(
+    entity: &Entity,
+    api_token: &ApiToken,
+) -> anyhow::Result<Vec<WorkflowJob>> {
+    let (owner, all_repos) = match entity {
+        Entity::Organization(org) => (org, list_org_repos(org, api_token).await?),
+        Entity::Repository(owner, repo) => (owner, vec![repo.to_owned()]),
+    };
+
+    let repo_runs = util::async_map_unordered_and_flatten(all_repos, |repo| async move {
+        let runs: Vec<_> = list_repo_queued_workflow_runs(owner, &repo, api_token)
+            .await?
+            .into_iter()
+            .map(|run| (repo.clone(), run.run_id))
+            .collect();
+        anyhow::Result::<_>::Ok(runs)
+    })
+    .await?;
+
+    let jobs = util::async_map_unordered_and_flatten(repo_runs, |(repo, run_id)| async move {
+        list_workflow_run_queued_jobs(owner, &repo, run_id, api_token).await
+    })
+    .await?;
+
+    Ok(jobs)
 }
 
 #[test]
@@ -205,19 +364,41 @@ fn test_entity_from_string() {
     assert_eq!(from("foo/bar/baz"), Err(InvalidEntityError));
 }
 
-#[test]
-fn test_locate_runner_tarball() {
+fn test_api<L, F>(lambda: L)
+where
+    L: FnOnce(ApiToken) -> F,
+    F: Future,
+{
     match std::env::vars().find(|(k, _)| k == "GITHUB_API_TOKEN") {
         Some((_, api_token_str)) => {
-            actix_web::rt::System::new()
-                .block_on(locate_runner_tarball(
-                    "linux-x64",
-                    &ApiToken(api_token_str.to_owned()),
-                ))
-                .unwrap();
+            actix_web::rt::System::new().block_on(lambda(ApiToken(api_token_str.to_owned())));
         }
         None => {
             eprintln!("warning: GITHUB_API_TOKEN not set, skipping GitHub API tests");
         }
     }
+}
+
+#[test]
+fn test_locate_runner_tarball() {
+    test_api(|api_token| async move {
+        locate_runner_tarball("linux-x64", &api_token)
+            .await
+            .unwrap();
+    });
+}
+
+#[test]
+fn test_list_pending_workflow_jobs() {
+    test_api(|api_token| async move {
+        println!(
+            "{:?}\n",
+            list_all_pending_workflow_jobs(
+                &Entity::Organization("celerity".to_owned()),
+                &api_token
+            )
+            .await
+            .unwrap()
+        )
+    });
 }
