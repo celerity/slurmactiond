@@ -12,7 +12,8 @@ use log::{debug, error};
 use serde::Deserialize;
 
 use crate::config::Config;
-use crate::github::{WorkflowJob, WorkflowJobId, WorkflowRunId, WorkflowStatus};
+use crate::github;
+use crate::github::{WorkflowJob, WorkflowStatus};
 use crate::scheduler::{self, Scheduler};
 
 type StaticContent = (&'static str, StatusCode);
@@ -222,6 +223,31 @@ async fn index(data: web::Data<SharedData>) -> HttpResponse {
         .body(html)
 }
 
+async fn schedule_all_pending_jobs(config_file: &Path, config: &Config, scheduler: &Scheduler) {
+    // We don't intend to fail the entire daemon if the initial querying or scheduling errors out,
+    // so we log errors and return ()
+    github::list_all_pending_workflow_jobs(&config.github.entity, &config.github.api_token)
+        .await
+        .unwrap_or_else(|e| {
+            error!("Error querying pending workflow jobs from Github: {e:#}");
+            Default::default()
+        })
+        .into_iter()
+        .map(|job| {
+            if let Err(e) = scheduler.job_enqueued(
+                job.job_id,
+                &job.name,
+                &job.url,
+                &job.labels,
+                config_file,
+                &config,
+            ) {
+                error!("Cannot enqueue pre-existing job: {e:#}");
+            }
+        })
+        .collect()
+}
+
 #[actix_web::main]
 pub async fn main(config_file: &Path) -> anyhow::Result<()> {
     let config = Config::read_from_toml_file(config_file)
@@ -240,20 +266,27 @@ pub async fn main(config_file: &Path) -> anyhow::Result<()> {
         handlebars,
     });
 
-    HttpServer::new(move || {
-        App::new()
-            .app_data(data.clone())
-            .service(index)
-            .service(webhook_event)
-    })
-    .bind(bind_address)?
-    .run()
-    .await?;
-    Ok(())
+    let server = {
+        let data = data.clone();
+        HttpServer::new(move || {
+            App::new()
+                .app_data(data.clone())
+                .service(index)
+                .service(webhook_event)
+        })
+        .bind(bind_address)?
+        .run()
+    };
+
+    let update = schedule_all_pending_jobs(config_file, &data.config, &data.scheduler);
+
+    let (server_result, ()) = futures_util::join!(server, update);
+    Ok(server_result?)
 }
 
 #[test]
 fn test_deserialize_payload() {
+    use crate::github::{WorkflowJobId, WorkflowRunId};
     use crate::webhook::WorkflowStatus::InProgress;
 
     let json = include_str!("../testdata/workflow_job.json");

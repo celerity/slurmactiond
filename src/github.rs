@@ -8,7 +8,7 @@ use crate::util;
 use awc::error::HeaderValue;
 use awc::http::Method;
 use awc::{http::header, Client, SendClientRequest};
-use log::debug;
+use log::{debug, info};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -259,6 +259,10 @@ async fn list_workflow_run_queued_jobs(
                 .filter(|job| job.status == WorkflowStatus::Queued),
         );
     }
+    info!(
+        "Found {} queued jobs in workflow run {run} of {owner}/{repo}",
+        all_jobs.len()
+    );
     Ok(all_jobs)
 }
 
@@ -296,6 +300,12 @@ async fn list_repo_queued_workflow_runs(
         }
         all_workflow_runs.extend(payload.workflow_runs.into_iter());
     }
+    if !all_workflow_runs.is_empty() {
+        info!(
+            "Found {} at least partially-queued workflow runs in {org}/{repo}",
+            all_workflow_runs.len()
+        );
+    }
     Ok(all_workflow_runs)
 }
 
@@ -321,6 +331,7 @@ async fn list_org_repos(org: &str, api_token: &ApiToken) -> anyhow::Result<Vec<S
         }
         all_repos.extend(payload.into_iter().map(|repo| repo.name));
     }
+    info!("Found {} repos in organization {org}", all_repos.len());
     Ok(all_repos)
 }
 
@@ -335,7 +346,8 @@ pub async fn list_all_pending_workflow_jobs(
 
     let repo_runs = util::async_map_unordered_and_flatten(all_repos, |repo| async move {
         let runs: Vec<_> = list_repo_queued_workflow_runs(owner, &repo, api_token)
-            .await?
+            .await
+            .with_context(|| format!("Error listing queued workflow runs for {owner}/{repo}"))?
             .into_iter()
             .map(|run| (repo.clone(), run.run_id))
             .collect();
@@ -344,10 +356,17 @@ pub async fn list_all_pending_workflow_jobs(
     .await?;
 
     let jobs = util::async_map_unordered_and_flatten(repo_runs, |(repo, run_id)| async move {
-        list_workflow_run_queued_jobs(owner, &repo, run_id, api_token).await
+        list_workflow_run_queued_jobs(owner, &repo, run_id, api_token)
+            .await
+            .with_context(|| {
+                format!(
+                    "Error listing queued jobs runs for workflow run {run_id} of {owner}/{repo}"
+                )
+            })
     })
     .await?;
 
+    info!("Found {} queued workflow jobs in total", jobs.len());
     Ok(jobs)
 }
 
@@ -364,6 +383,7 @@ fn test_entity_from_string() {
     assert_eq!(from("foo/bar/baz"), Err(InvalidEntityError));
 }
 
+#[cfg(test)]
 fn test_api<L, F>(lambda: L)
 where
     L: FnOnce(ApiToken) -> F,
