@@ -1,3 +1,4 @@
+use anyhow::Context;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
@@ -7,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::github;
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SlurmConfig {
     #[serde(default = "SlurmConfig::default_srun")]
@@ -43,7 +44,7 @@ impl FromStr for TargetId {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetConfig {
     pub runner_labels: Vec<String>,
@@ -53,14 +54,14 @@ pub struct TargetConfig {
     pub srun_env: HashMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GithubConfig {
     pub entity: github::Entity,
     pub api_token: github::ApiToken,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunnerRegistrationConfig {
     pub name: String,
@@ -68,7 +69,7 @@ pub struct RunnerRegistrationConfig {
     pub labels: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunnerConfig {
     pub platform: String,
@@ -84,14 +85,14 @@ impl RunnerConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpConfig {
     pub bind: String,
     pub secret: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub http: HttpConfig,
@@ -103,10 +104,22 @@ pub struct Config {
     pub targets: HashMap<TargetId, TargetConfig>,
 }
 
-impl Config {
-    pub fn read_from_toml_file(path: &Path) -> anyhow::Result<Config> {
-        let bytes = std::fs::read(path)?;
-        Ok(toml::from_slice(&bytes)?)
+#[derive(Clone)]
+pub struct ConfigFile {
+    pub config: Config,
+    pub path: PathBuf,
+}
+
+impl ConfigFile {
+    pub fn read(path: &Path) -> anyhow::Result<ConfigFile> {
+        let path = path
+            .canonicalize()
+            .with_context(|| format!("Cannot resolve path {}", path.display()))?;
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("Error reading from {}", path.display()))?;
+        let config = toml::from_slice(&bytes)
+            .with_context(|| format!("Error parsing {} as TOML", path.display()))?;
+        Ok(ConfigFile { config, path })
     }
 }
 

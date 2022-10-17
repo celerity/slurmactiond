@@ -11,7 +11,7 @@ use nix::sys::signal::{kill, Signal};
 use nix::unistd::{gethostname, Pid};
 use tokio::process::Command;
 
-use crate::config::{Config, RunnerConfig, TargetId};
+use crate::config::{ConfigFile, RunnerConfig, TargetId};
 use crate::file_io::WorkDir;
 use crate::github::RunnerRegistrationToken;
 use crate::util::{
@@ -166,12 +166,15 @@ async fn unpack_tar_gz(tarball: &Path, into_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[actix_web::main]
-pub async fn run(config_file: &Path, target: TargetId, job: slurm::JobId) -> anyhow::Result<()> {
+pub async fn run(
+    config_file: ConfigFile,
+    target: TargetId,
+    job: slurm::JobId,
+) -> anyhow::Result<()> {
     const API_ATTEMPTS: u32 = 3;
     const API_COOLDOWN: Duration = Duration::from_secs(30);
 
-    let cfg = Config::read_from_toml_file(config_file)
-        .with_context(|| format!("Reading configuration from `{}`", config_file.display()))?;
+    let cfg = &config_file.config;
     let runner_name = format!("{}-{}-{}", cfg.runner.registration.name, target.0, job);
 
     let metadata = ipc::RunnerMetadata {

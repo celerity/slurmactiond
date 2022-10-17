@@ -1,7 +1,6 @@
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::num::ParseIntError;
-use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use std::str::FromStr;
 
@@ -11,7 +10,7 @@ use nix::unistd::getuid;
 use serde::{Deserialize, Serialize};
 use tokio::process::{Child, Command};
 
-use crate::config::{Config, TargetId};
+use crate::config::{Config, ConfigFile, TargetId};
 use crate::ipc;
 use crate::ipc::RunnerMetadata;
 use crate::util::{ChildStream, ChildStreamMux, ResultSuccessExt as _};
@@ -88,46 +87,39 @@ pub struct AttachedRunnerJob {
 }
 
 impl RunnerJob {
-    pub fn spawn(
-        config_path: &Path,
-        config: &Config,
-        target: &TargetId,
-    ) -> anyhow::Result<RunnerJob> {
-        let name = format!("{}-{}", &config.slurm.job_name, &target.0);
+    pub fn spawn(config_file: &ConfigFile, target: &TargetId) -> anyhow::Result<RunnerJob> {
+        let cfg = &config_file.config;
+
+        let name = format!("{}-{}", &cfg.slurm.job_name, &target.0);
         let executable = std::env::current_exe()
             .with_context(|| "Cannot determine current executable name")?
             .as_os_str()
             .to_owned();
 
         let mut args: Vec<OsString> = Vec::new();
-        args.extend(config.slurm.srun_options.iter().map(OsString::from));
-        args.extend(
-            config.targets[target]
-                .srun_options
-                .iter()
-                .map(OsString::from),
-        );
+        args.extend(cfg.slurm.srun_options.iter().map(OsString::from));
+        args.extend(cfg.targets[target].srun_options.iter().map(OsString::from));
         args.push("-n1".into());
         args.push("-J".into());
         args.push(name.as_str().into());
         args.push(executable);
         args.push("-c".into());
-        args.push(config_path.into());
+        args.push(config_file.path.as_os_str().to_owned());
         args.push("runner".into());
         args.push(target.0.as_str().into());
 
         if log::log_enabled!(log::Level::Debug) {
-            let mut cl = vec![config.slurm.srun.to_string_lossy().to_owned()];
+            let mut cl = vec![cfg.slurm.srun.to_string_lossy().to_owned()];
             for a in &args {
                 cl.push(a.to_string_lossy().to_owned());
             }
             debug!("Starting {}", cl.join(" "));
         }
 
-        let mut child = Command::new(&config.slurm.srun)
+        let mut child = Command::new(&cfg.slurm.srun)
             .args(args)
-            .envs(config.slurm.srun_env.iter())
-            .envs(config.targets[target].srun_env.iter())
+            .envs(cfg.slurm.srun_env.iter())
+            .envs(cfg.targets[target].srun_env.iter())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

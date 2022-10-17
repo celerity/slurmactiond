@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use log::error;
 use nix::unistd::isatty;
 
-use crate::config::TargetId;
+use crate::config::{ConfigFile, TargetId};
 
 mod config;
 mod file_io;
@@ -71,21 +71,17 @@ fn main_inner() -> anyhow::Result<()> {
     let command = args.command.unwrap_or(Command::Server);
     configure_logger(&command);
 
-    let config_file = (args.config_file.canonicalize()).with_context(|| {
-        format!(
-            "Cannot resolve config path `{}`",
-            args.config_file.display()
-        )
-    })?;
+    let config_file =
+        ConfigFile::read(&args.config_file).with_context(|| "Error loading configuration")?;
 
     match command {
         Command::Server => {
-            webhook::main(&config_file).with_context(|| "Error while serving webhook over HTTP")
+            webhook::main(config_file).with_context(|| "Error while serving webhook over HTTP")
         }
         Command::Runner { target } => {
             let job_id = slurm::current_job()
                 .with_context(|| "Failed to determine the SLURM job id of this process")?;
-            runner::run(&config_file, target, job_id)
+            runner::run(config_file, target, job_id)
         }
     }
 }

@@ -1,4 +1,4 @@
-use crate::config::{Config, TargetId};
+use crate::config::{Config, ConfigFile, TargetId};
 use crate::ipc::RunnerMetadata;
 use crate::{github, slurm};
 use anyhow::Context as _;
@@ -7,7 +7,6 @@ use serde::Serialize;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
@@ -78,6 +77,7 @@ pub struct SchedulerStateSnapshot {
 
 #[derive(Clone)]
 pub struct Scheduler {
+    config_file: Arc<ConfigFile>,
     state: Arc<Mutex<SchedulerState>>,
 }
 
@@ -90,8 +90,9 @@ pub enum Error {
 }
 
 impl Scheduler {
-    pub fn new() -> Scheduler {
+    pub fn new(config_file: ConfigFile) -> Scheduler {
         Scheduler {
+            config_file: Arc::new(config_file),
             state: Arc::new(Mutex::new(SchedulerState {
                 jobs: HashMap::new(),
                 runners: HashMap::new(),
@@ -150,12 +151,7 @@ impl Scheduler {
         Ok(())
     }
 
-    fn spawn_new_runner(
-        &self,
-        target: &TargetId,
-        config_path: &Path,
-        config: &Config,
-    ) -> anyhow::Result<()> {
+    fn spawn_new_runner(&self, target: &TargetId) -> anyhow::Result<()> {
         let runner_info = RunnerInfo {
             target: target.clone(),
             state: RunnerState::Queued,
@@ -167,7 +163,7 @@ impl Scheduler {
             runner_id
         });
 
-        let slurm_runner = slurm::RunnerJob::spawn(config_path, config, &target)
+        let slurm_runner = slurm::RunnerJob::spawn(&self.config_file, &target)
             .with_context(|| "Submitting job to SLURM")?;
 
         let handle = self.clone();
@@ -186,10 +182,8 @@ impl Scheduler {
         name: &str,
         url: &str,
         labels: &[String],
-        config_path: &Path,
-        config: &Config,
     ) -> Result<(), Error> {
-        if let Some(target) = match_target(&config, &labels) {
+        if let Some(target) = match_target(&self.config_file.config, &labels) {
             debug!("Matched runner labels {labels:?} to target {}", job_id.0);
 
             self.with_state(|state| {
@@ -210,7 +204,7 @@ impl Scheduler {
             })?;
 
             info!("Launching SLURM job for workflow job {job_id}");
-            self.spawn_new_runner(target, config_path, config)?;
+            self.spawn_new_runner(target)?;
         } else {
             debug!("Runner labels {labels:?} do not match any target");
         }
@@ -222,8 +216,6 @@ impl Scheduler {
         &self,
         job_id: github::WorkflowJobId,
         runner_name: &str,
-        config_path: &Path,
-        config: &Config,
     ) -> Result<(), Error> {
         enum Transition {
             RunnerPickedUpQueuedJob(InternalRunnerId),
@@ -274,7 +266,7 @@ impl Scheduler {
                     job_id
                 );
                 info!("Launching a replacement SLURM job for workflow job {job_id}");
-                self.spawn_new_runner(&respawn_target, config_path, config)
+                self.spawn_new_runner(&respawn_target)
                     .map_err(Error::Failed)
             }
             Transition::ForeignRunnerStoleQueuedJob => {

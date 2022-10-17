@@ -1,17 +1,15 @@
 use std::convert::Infallible;
 use std::fmt::{Debug, Display, Formatter};
-use std::path::{Path, PathBuf};
 
 use actix_web::error::ParseError;
 use actix_web::http::header::{ContentType, Header, HeaderName, HeaderValue, TryIntoHeaderValue};
 use actix_web::http::StatusCode;
 use actix_web::{web, App, HttpMessage, HttpResponse, HttpServer, ResponseError};
-use anyhow::Context as _;
 use handlebars::Handlebars;
 use log::{debug, error};
 use serde::Deserialize;
 
-use crate::config::Config;
+use crate::config::{ConfigFile, GithubConfig, HttpConfig};
 use crate::github;
 use crate::github::{WorkflowJob, WorkflowStatus};
 use crate::scheduler::{self, Scheduler};
@@ -65,20 +63,7 @@ struct WorkflowJobPayload {
     workflow_job: WorkflowJob,
 }
 
-struct SharedData {
-    config_path: PathBuf,
-    config: Config,
-    scheduler: Scheduler,
-    handlebars: Handlebars<'static>,
-}
-
-async fn workflow_job_event(data: &SharedData, payload: &WorkflowJobPayload) -> StaticResult {
-    let SharedData {
-        config_path,
-        config,
-        scheduler,
-        ..
-    } = data;
+async fn workflow_job_event(scheduler: &Scheduler, payload: &WorkflowJobPayload) -> StaticResult {
     let WorkflowJobPayload {
         action,
         workflow_job:
@@ -100,17 +85,10 @@ async fn workflow_job_event(data: &SharedData, payload: &WorkflowJobPayload) -> 
         .ok_or_else(|| BadRequest("workflow_job.runner_name missing".to_owned()));
 
     let result = match action {
-        WorkflowStatus::Queued => scheduler.job_enqueued(
-            *job_id,
-            workflow_name,
-            workflow_url,
-            job_labels,
-            config_path,
-            config,
-        ),
-        WorkflowStatus::InProgress => {
-            scheduler.job_processing(*job_id, runner_name?.as_str(), config_path, config)
+        WorkflowStatus::Queued => {
+            scheduler.job_enqueued(*job_id, workflow_name, workflow_url, job_labels)
         }
+        WorkflowStatus::InProgress => scheduler.job_processing(*job_id, runner_name?.as_str()),
         WorkflowStatus::Completed => Ok(scheduler.job_completed(*job_id)),
         _ => Ok(()),
     };
@@ -192,12 +170,13 @@ async fn webhook_event(
     event: web::Header<GithubEvent>,
     sig: web::Header<HubSignature256>,
     payload: web::Bytes,
-    data: web::Data<SharedData>,
+    scheduler: web::Data<Scheduler>,
+    http_config: web::Data<HttpConfig>,
 ) -> StaticResult {
     use hmac::Mac;
     type HmacSha256 = hmac::Hmac<sha2::Sha256>;
 
-    let mut mac = HmacSha256::new_from_slice(data.config.http.secret.as_bytes()).unwrap();
+    let mut mac = HmacSha256::new_from_slice(http_config.secret.as_bytes()).unwrap();
     mac.update(&payload);
     mac.verify_slice(&sig.0 .0)
         .map_err(|_| BadRequest("HMAC mismatch".to_owned()))?;
@@ -205,7 +184,7 @@ async fn webhook_event(
     match event.0 {
         GithubEvent::WorkflowJob => {
             let p = serde_json::from_slice(&payload).map_err(|e| BadRequest(format!("{e:#}")))?;
-            workflow_job_event(data.as_ref(), &p).await?;
+            workflow_job_event(&scheduler, &p).await?;
             Ok(NO_CONTENT)
         }
         GithubEvent::Other => Ok(NO_CONTENT),
@@ -213,20 +192,22 @@ async fn webhook_event(
 }
 
 #[actix_web::get("/")]
-async fn index(data: web::Data<SharedData>) -> HttpResponse {
-    let html = data
-        .handlebars
-        .render("index", &data.scheduler.snapshot_state())
+async fn index(
+    scheduler: web::Data<Scheduler>,
+    handlebars: web::Data<Handlebars<'static>>,
+) -> HttpResponse {
+    let html = handlebars
+        .render("index", &scheduler.snapshot_state())
         .expect("Error rendering index template");
     HttpResponse::build(StatusCode::OK)
         .content_type(ContentType::html())
         .body(html)
 }
 
-async fn schedule_all_pending_jobs(config_file: &Path, config: &Config, scheduler: &Scheduler) {
+async fn schedule_all_pending_jobs(github_config: &GithubConfig, scheduler: &Scheduler) {
     // We don't intend to fail the entire daemon if the initial querying or scheduling errors out,
     // so we log errors and return ()
-    github::list_all_pending_workflow_jobs(&config.github.entity, &config.github.api_token)
+    github::list_all_pending_workflow_jobs(&github_config.entity, &github_config.api_token)
         .await
         .unwrap_or_else(|e| {
             error!("Error querying pending workflow jobs from Github: {e:#}");
@@ -234,14 +215,7 @@ async fn schedule_all_pending_jobs(config_file: &Path, config: &Config, schedule
         })
         .into_iter()
         .map(|job| {
-            if let Err(e) = scheduler.job_enqueued(
-                job.job_id,
-                &job.name,
-                &job.url,
-                &job.labels,
-                config_file,
-                &config,
-            ) {
+            if let Err(e) = scheduler.job_enqueued(job.job_id, &job.name, &job.url, &job.labels) {
                 error!("Cannot enqueue pre-existing job: {e:#}");
             }
         })
@@ -249,36 +223,31 @@ async fn schedule_all_pending_jobs(config_file: &Path, config: &Config, schedule
 }
 
 #[actix_web::main]
-pub async fn main(config_file: &Path) -> anyhow::Result<()> {
-    let config = Config::read_from_toml_file(config_file)
-        .with_context(|| format!("Reading configuration from `{}`", config_file.display()))?;
+pub async fn main(config_file: ConfigFile) -> anyhow::Result<()> {
+    let scheduler = web::Data::new(Scheduler::new(config_file.clone()));
 
     let mut handlebars = Handlebars::new();
     handlebars
         .register_template_string("index", include_str!("../res/html/index.html"))
         .unwrap();
 
-    let bind_address = config.http.bind.clone();
-    let data = web::Data::new(SharedData {
-        config_path: config_file.to_owned(),
-        config,
-        scheduler: Scheduler::new(),
-        handlebars,
-    });
-
     let server = {
-        let data = data.clone();
+        let rc_scheduler = web::Data::new(scheduler.clone());
+        let rc_handlebars = web::Data::new(handlebars);
+        let rc_http_config = web::Data::new(config_file.config.http.clone());
         HttpServer::new(move || {
             App::new()
-                .app_data(data.clone())
+                .app_data(rc_scheduler.clone())
+                .app_data(rc_handlebars.clone())
+                .app_data(rc_http_config.clone())
                 .service(index)
                 .service(webhook_event)
         })
-        .bind(bind_address)?
+        .bind(&config_file.config.http.bind)?
         .run()
     };
 
-    let update = schedule_all_pending_jobs(config_file, &data.config, &data.scheduler);
+    let update = schedule_all_pending_jobs(&config_file.config.github, &scheduler);
 
     let (server_result, ()) = futures_util::join!(server, update);
     Ok(server_result?)

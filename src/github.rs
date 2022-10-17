@@ -34,7 +34,7 @@ impl Display for WorkflowJobId {
     }
 }
 
-#[derive(Deserialize, Debug, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Debug, PartialEq, Eq)]
 #[serde(try_from = "&str")]
 pub enum Entity {
     Organization(String),
@@ -69,7 +69,7 @@ impl TryFrom<&str> for Entity {
     }
 }
 
-#[derive(Deserialize, Debug, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct ApiToken(pub String);
 
