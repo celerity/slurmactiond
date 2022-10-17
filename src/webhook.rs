@@ -328,6 +328,7 @@ fn test_render_index() {
                     state: RunnerState::Active(RunnerMetadata {
                         runner_name: "runner-1".to_owned(),
                         slurm_job: slurm::JobId(999),
+                        concurrent_id: 1,
                     }),
                 },
             ),

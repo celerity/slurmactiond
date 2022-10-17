@@ -146,6 +146,7 @@ impl Drop for LockFile {
 }
 
 pub struct WorkDir {
+    pub concurrent_id: u32,
     pub path: PathBuf,
     _lock: LockFile,
 }
@@ -165,7 +166,13 @@ impl WorkDir {
 
             let lock_file_path = path.join(".lock");
             match LockFile::create_or_adopt(&lock_file_path, job, active_jobs) {
-                Ok(lock) => return Ok(WorkDir { path, _lock: lock }),
+                Ok(lock) => {
+                    return Ok(WorkDir {
+                        concurrent_id,
+                        path,
+                        _lock: lock,
+                    })
+                }
                 Err(LockError::Occupied(_)) => (), // retry with the next concurrent_id
                 Err(LockError::Io(e)) => {
                     return Err(e).with_context(|| {

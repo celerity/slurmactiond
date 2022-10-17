@@ -9,6 +9,7 @@ use std::io::{Result, Write};
 pub struct RunnerMetadata {
     pub slurm_job: slurm::JobId,
     pub runner_name: String,
+    pub concurrent_id: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -60,7 +61,11 @@ impl LogFormatter {
 
 impl Display for RunnerMetadata {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} (SLURM #{})", self.runner_name, self.slurm_job)
+        write!(
+            f,
+            "{} (SLURM #{}, concurrent id {})",
+            self.runner_name, self.slurm_job, self.concurrent_id
+        )
     }
 }
 

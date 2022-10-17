@@ -177,17 +177,6 @@ pub async fn run(
     let cfg = &config_file.config;
     let runner_name = format!("{}-{}-{}", cfg.runner.registration.name, target.0, job);
 
-    let metadata = ipc::RunnerMetadata {
-        slurm_job: job,
-        runner_name: runner_name.clone(),
-    };
-    ipc::send(metadata).with_context(|| "Error serializing metadata to stdout")?;
-
-    let base_labels = cfg.runner.registration.labels.iter().map(AsRef::as_ref);
-    let target_labels = cfg.targets[&target].runner_labels.iter().map(AsRef::as_ref);
-    let all_labels: Vec<&str> = base_labels.chain(target_labels).collect();
-    assert!(!all_labels.iter().any(|l| l.contains(',')));
-
     let active_jobs = slurm::active_jobs(&cfg)
         .await
         .with_context(|| "Error listing active slurm jobs")?;
@@ -195,12 +184,24 @@ pub async fn run(
     let work_dir = WorkDir::lock(&cfg.runner.work_dir.join(&target.0), job, &active_jobs)
         .with_context(|| "Cannot lock private working directory")?;
 
+    let metadata = ipc::RunnerMetadata {
+        slurm_job: job,
+        runner_name: runner_name.clone(),
+        concurrent_id: work_dir.concurrent_id,
+    };
+    ipc::send(metadata).with_context(|| "Error serializing metadata to stdout")?;
+
     if log::max_level() >= log::Level::Info {
         let host_name = gethostname()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|_| "(unknown hostname)".to_string());
         info!("Running on {host_name} in `{}`", work_dir.path.display());
     }
+
+    let base_labels = cfg.runner.registration.labels.iter().map(AsRef::as_ref);
+    let target_labels = cfg.targets[&target].runner_labels.iter().map(AsRef::as_ref);
+    let all_labels: Vec<&str> = base_labels.chain(target_labels).collect();
+    assert!(!all_labels.iter().any(|l| l.contains(',')));
 
     if work_dir.path.join("config.sh").is_file() {
         debug!("Re-using existing Github Actions Runner installation");
