@@ -224,7 +224,7 @@ async fn schedule_all_pending_jobs(github_config: &GithubConfig, scheduler: &Sch
 
 #[actix_web::main]
 pub async fn main(config_file: ConfigFile) -> anyhow::Result<()> {
-    let scheduler = web::Data::new(Scheduler::new(config_file.clone()));
+    let scheduler = Scheduler::new(config_file.clone());
 
     let mut handlebars = Handlebars::new();
     handlebars
