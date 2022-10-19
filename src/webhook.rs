@@ -279,7 +279,7 @@ fn test_deserialize_payload() {
 
 #[test]
 fn test_render_index() {
-    use crate::config;
+    use crate::config::{self, TargetId};
     use crate::github::WorkflowJobId;
     use crate::ipc::RunnerMetadata;
     use crate::scheduler::{
@@ -300,7 +300,7 @@ fn test_render_index() {
                 WorkflowJobInfo {
                     name: "Job A".to_owned(),
                     url: "https://github.com/octo-org/example-workflow/runs/1".to_owned(),
-                    state: WorkflowJobState::Pending,
+                    state: WorkflowJobState::Pending(vec![TargetId("label".to_owned())]),
                 },
             ),
             (
@@ -308,7 +308,7 @@ fn test_render_index() {
                 WorkflowJobInfo {
                     name: "Job B".to_owned(),
                     url: "https://github.com/octo-org/example-workflow/runs/2".to_owned(),
-                    state: WorkflowJobState::Pending,
+                    state: WorkflowJobState::Pending(vec![TargetId("label".to_owned())]),
                 },
             ),
             (
@@ -325,17 +325,19 @@ fn test_render_index() {
                 InternalRunnerId(1),
                 RunnerInfo {
                     target: config::TargetId("target-a".to_string()),
-                    state: RunnerState::Active(RunnerMetadata {
+                    metadata: Some(RunnerMetadata {
                         runner_name: "runner-1".to_owned(),
                         slurm_job: slurm::JobId(999),
                         concurrent_id: 1,
                     }),
+                    state: RunnerState::Running(WorkflowJobId(789)),
                 },
             ),
             (
                 InternalRunnerId(2),
                 RunnerInfo {
                     target: config::TargetId("target-b".to_string()),
+                    metadata: None,
                     state: RunnerState::Queued,
                 },
             ),

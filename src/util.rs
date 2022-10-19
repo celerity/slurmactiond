@@ -1,6 +1,8 @@
 use log::{debug, info, warn};
+use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 use std::future::Future;
+use std::hash::Hash;
 use std::io;
 use std::process::{ExitStatus, Output, Stdio};
 use std::time::Duration;
@@ -235,4 +237,25 @@ where
         stream = tail;
     }
     Ok(vec)
+}
+
+pub fn increment_or_insert<K: Clone + PartialEq + Eq + Hash>(map: &mut HashMap<K, usize>, key: &K) {
+    match map.get_mut(key) {
+        Some(count) => *count += 1,
+        None => drop(map.insert(key.clone(), 1)),
+    }
+}
+
+pub fn decrement_or_remove<K: PartialEq + Eq + Hash>(map: &mut HashMap<K, usize>, key: &K) -> bool {
+    match map.get_mut(key) {
+        None => false,
+        Some(1) => {
+            map.remove(key);
+            true
+        }
+        Some(count) => {
+            *count -= 1;
+            true
+        }
+    }
 }

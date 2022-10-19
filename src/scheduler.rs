@@ -1,5 +1,6 @@
-use crate::config::{Config, ConfigFile, TargetId};
+use crate::config::{ConfigFile, TargetConfig, TargetId};
 use crate::ipc::RunnerMetadata;
+use crate::util;
 use crate::{github, slurm};
 use anyhow::Context as _;
 use log::{debug, error, info, warn};
@@ -10,21 +11,30 @@ use std::fmt::{Display, Formatter};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
-fn match_target<'c>(config: &'c Config, labels: &[String]) -> Option<&'c TargetId> {
-    let unmatched_labels: Vec<_> = (labels.iter())
-        // GitHub only includes the "self-hosted" label if the set of labels is otherwise empty.
-        // We don't require the user to list "self-hosted" in the config.
-        .filter(|l| !(*l == "self-hosted" || config.runner.registration.labels.contains(*l)))
+fn match_targets<'t, T>(
+    job_labels: &[String],
+    runner_labels: &[String],
+    targets: &'t T,
+) -> Vec<TargetId>
+where
+    &'t T: IntoIterator<Item = (&'t TargetId, &'t TargetConfig)>,
+{
+    // GitHub only includes the "self-hosted" label if the set of labels is otherwise empty.
+    // We don't require the user to list "self-hosted" in the config.
+    let unmatched_labels: Vec<_> = (job_labels.iter())
+        .filter(|l| !(*l == "self-hosted" || runner_labels.contains(*l)))
+        .map(String::clone)
         .collect();
-    let closest_matching_target = (config.targets.iter())
-        .filter(|(_, p)| unmatched_labels.iter().all(|l| p.runner_labels.contains(l)))
-        .min_by_key(|(_, p)| p.runner_labels.len()); // min: closest match
-    if let Some((id, _)) = closest_matching_target {
-        debug!("matched runner labels {:?} to target {}", labels, id.0);
-        Some(id)
-    } else {
-        None
-    }
+    let mut matching_target_distances: Vec<_> = targets
+        .into_iter()
+        .filter(|(_, t)| unmatched_labels.iter().all(|l| t.runner_labels.contains(l)))
+        .map(|(id, t)| (id, t.runner_labels.len()))
+        .collect();
+    matching_target_distances.sort_by_key(|(_, len)| *len);
+    matching_target_distances
+        .iter()
+        .map(|(id, _)| (*id).clone())
+        .collect()
 }
 
 #[derive(Copy, Clone, Serialize, Debug, PartialEq, Eq, Hash)]
@@ -39,8 +49,9 @@ impl Display for InternalRunnerId {
 
 #[derive(Clone, Serialize, Debug, PartialEq, Eq)]
 pub enum WorkflowJobState {
-    Pending,
+    Pending(Vec<TargetId>),
     InProgress(InternalRunnerId),
+    InProgressOnForeignRunner(String),
 }
 
 #[derive(Clone, Serialize, Debug, PartialEq, Eq)]
@@ -53,12 +64,14 @@ pub struct WorkflowJobInfo {
 #[derive(Clone, Serialize)]
 pub enum RunnerState {
     Queued,
-    Active(RunnerMetadata),
+    Waiting,
+    Running(github::WorkflowJobId),
 }
 
 #[derive(Clone, Serialize)]
 pub struct RunnerInfo {
     pub target: TargetId,
+    pub metadata: Option<RunnerMetadata>,
     pub state: RunnerState,
 }
 
@@ -122,7 +135,8 @@ impl Scheduler {
                 .get_mut(&runner_id)
                 .expect("Unknown internal runner id");
             assert!(matches!(info.state, RunnerState::Queued));
-            info.state = RunnerState::Active(metadata.clone());
+            info.metadata = Some(metadata.clone());
+            info.state = RunnerState::Waiting;
 
             let existing_by_name = state
                 .rids_by_name
@@ -154,6 +168,7 @@ impl Scheduler {
     fn spawn_new_runner(&self, target: &TargetId) -> anyhow::Result<()> {
         let runner_info = RunnerInfo {
             target: target.clone(),
+            metadata: None,
             state: RunnerState::Queued,
         };
         let runner_id = self.with_state(|state| {
@@ -176,6 +191,42 @@ impl Scheduler {
         Ok(())
     }
 
+    // TODO what do we actually signal with a result here? If scheduling fails, does it place the
+    //  scheduler in some permanent invalid state, will we try again next time, and can we find a
+    //  way to avoid endlessly re-trying a failing operation?
+    fn schedule(&self) -> anyhow::Result<()> {
+        let (mut pending_job_targets, mut queued_runner_targets) = self.with_state(|state| {
+            let pending_job_targets: Vec<_> = (state.jobs)
+                .iter()
+                .filter_map(|(_, info)| match &info.state {
+                    WorkflowJobState::Pending(targets) => Some(targets.clone()),
+                    _ => None,
+                })
+                .collect();
+
+            let mut queued_runner_targets = HashMap::new();
+            for (_, info) in &state.runners {
+                if let RunnerState::Queued = info.state {
+                    util::increment_or_insert(&mut queued_runner_targets, &info.target);
+                }
+            }
+            (pending_job_targets, queued_runner_targets)
+        });
+
+        pending_job_targets.retain(|job_targets| {
+            job_targets
+                .iter()
+                .find(|t| util::decrement_or_remove(&mut queued_runner_targets, t))
+                .is_some()
+        });
+
+        for targets in &pending_job_targets {
+            self.spawn_new_runner(&targets[0])?;
+        }
+
+        Ok(())
+    }
+
     pub fn job_enqueued<'c>(
         &self,
         job_id: github::WorkflowJobId,
@@ -183,8 +234,13 @@ impl Scheduler {
         url: &str,
         labels: &[String],
     ) -> Result<(), Error> {
-        if let Some(target) = match_target(&self.config_file.config, &labels) {
-            debug!("Matched runner labels {labels:?} to target {}", job_id.0);
+        let targets = match_targets(
+            labels,
+            &self.config_file.config.runner.registration.labels,
+            &self.config_file.config.targets,
+        );
+        if !targets.is_empty() {
+            debug!("Matched labels {labels:?} of job {job_id} to targets {targets:?}");
 
             self.with_state(|state| {
                 // like state.try_insert(), but stable
@@ -196,15 +252,14 @@ impl Scheduler {
                         entry.insert(WorkflowJobInfo {
                             name: name.to_owned(),
                             url: url.to_owned(),
-                            state: WorkflowJobState::Pending,
+                            state: WorkflowJobState::Pending(targets),
                         });
                         Ok(())
                     }
                 }
             })?;
 
-            info!("Launching SLURM job for workflow job {job_id}");
-            self.spawn_new_runner(target)?;
+            self.schedule()?;
         } else {
             debug!("Runner labels {labels:?} do not match any target");
         }
@@ -218,61 +273,64 @@ impl Scheduler {
         runner_name: &str,
     ) -> Result<(), Error> {
         enum Transition {
-            RunnerPickedUpQueuedJob(InternalRunnerId),
-            RunnerStoleForeignJob {
-                runner_id: InternalRunnerId,
-                respawn_target: TargetId,
-            },
-            ForeignRunnerStoleQueuedJob,
-            ForeignRunnerPickedUpForeignJob,
+            RunnerPickedUpPendingJob(InternalRunnerId),
+            RunnerStoleForeignJob(InternalRunnerId),
+            ForeignRunnerStolePendingJob,
             JobNotPending,
+            RunnerNotWaiting(InternalRunnerId),
+            ForeignRunnerPickedUpForeignJob,
         }
 
         let transition = self.with_state(|state| {
-            let active_runner = (state.rids_by_name.get(runner_name))
-                .map(|rid| (rid, state.runners.get(rid).unwrap()))
-                .filter(|(_, info)| matches!(info.state, RunnerState::Active(_)));
-
+            let runner_and_state = (state.rids_by_name.get(runner_name))
+                .map(|rid| (rid, &mut state.runners.get_mut(rid).unwrap().state));
             let workflow_job_state = state.jobs.get_mut(&job_id).map(|info| &mut info.state);
-            match (active_runner, workflow_job_state) {
-                (Some((runner_id, _)), Some(job_state @ WorkflowJobState::Pending)) => {
+            match (runner_and_state, workflow_job_state) {
+                (
+                    Some((runner_id, runner_state @ RunnerState::Waiting)),
+                    Some(job_state @ WorkflowJobState::Pending(_)),
+                ) => {
+                    *runner_state = RunnerState::Running(job_id);
                     *job_state = WorkflowJobState::InProgress(*runner_id);
-                    Transition::RunnerPickedUpQueuedJob(*runner_id)
+                    Transition::RunnerPickedUpPendingJob(*runner_id)
                 }
-                (Some(..), Some(WorkflowJobState::InProgress(_))) => Transition::JobNotPending,
-                (None, Some(_)) => {
-                    state.jobs.remove(&job_id);
-                    Transition::ForeignRunnerStoleQueuedJob
+                (Some((runner_id, runner_state @ RunnerState::Waiting)), None) => {
+                    *runner_state = RunnerState::Running(job_id);
+                    Transition::RunnerStoleForeignJob(*runner_id)
                 }
-                (Some((runner_id, runner_info)), None) => Transition::RunnerStoleForeignJob {
-                    runner_id: *runner_id,
-                    respawn_target: runner_info.target.clone(),
-                },
+                (None, Some(job_state @ WorkflowJobState::Pending(_))) => {
+                    *job_state =
+                        WorkflowJobState::InProgressOnForeignRunner(runner_name.to_owned());
+                    Transition::ForeignRunnerStolePendingJob
+                }
+                (Some((runner_id, _)), _) => Transition::RunnerNotWaiting(*runner_id),
+                (_, Some(_)) => Transition::JobNotPending,
                 (None, None) => Transition::ForeignRunnerPickedUpForeignJob,
             }
         });
 
         match transition {
-            Transition::RunnerPickedUpQueuedJob(runner_id) => {
+            Transition::RunnerPickedUpPendingJob(runner_id) => {
                 info!("Workflow job {job_id} picked up by runner {runner_id} ({runner_name})");
+                // Github might not assign jobs to runners optimally: If job 1 can run on runners
+                // A and B, and job 2 can run on runner B only, Github might still assign job 1
+                // to runner B, leaving job 2 without an eligible runner.
+                self.schedule()?;
                 Ok(())
             }
-            Transition::RunnerStoleForeignJob {
-                runner_id,
-                respawn_target,
-            } => {
+            Transition::RunnerStoleForeignJob(runner_id) => {
                 warn!(
                     "Runner {runner_id} ({runner_name}) has picked up foreign workflow job {}",
                     job_id
                 );
-                info!("Launching a replacement SLURM job for workflow job {job_id}");
-                self.spawn_new_runner(&respawn_target)
-                    .map_err(Error::Failed)
+                // There is most likely a missing runner now.
+                self.schedule()?;
+                Ok(())
             }
-            Transition::ForeignRunnerStoleQueuedJob => {
+            Transition::ForeignRunnerStolePendingJob => {
                 // TODO detect when job pickup happens before we receive runner metadata via IPC
                 //  (which should never happen in practice)
-                warn!("Job {job_id} was picked up by a foreign runner, removed it from tracking");
+                warn!("Job {job_id} was picked up by foreign runner {runner_name}");
                 // TODO now we have a runner scheduled with nothing to do
                 Ok(())
             }
@@ -283,6 +341,9 @@ impl Scheduler {
             Transition::JobNotPending => {
                 Err(Error::InvalidState(format!("Job {job_id} not pending")))
             }
+            Transition::RunnerNotWaiting(runner_id) => Err(Error::InvalidState(format!(
+                "Runner {runner_id} ({runner_name}) is not waiting for a job"
+            ))),
         }
     }
 
