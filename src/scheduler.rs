@@ -88,8 +88,13 @@ pub struct SchedulerStateSnapshot {
     pub runners: HashMap<InternalRunnerId, RunnerInfo>,
 }
 
+trait Executor: Send + Sync {
+    fn spawn_runner(&self, target: &TargetId, scheduler: &Scheduler) -> anyhow::Result<()>;
+}
+
 #[derive(Clone)]
 pub struct Scheduler {
+    executor: Arc<dyn Executor>,
     config_file: Arc<ConfigFile>,
     state: Arc<Mutex<SchedulerState>>,
 }
@@ -104,7 +109,12 @@ pub enum Error {
 
 impl Scheduler {
     pub fn new(config_file: ConfigFile) -> Scheduler {
+        Self::with_executor(Arc::new(SlurmExecutor), config_file)
+    }
+
+    fn with_executor(executor: Arc<dyn Executor>, config_file: ConfigFile) -> Scheduler {
         Scheduler {
+            executor,
             config_file: Arc::new(config_file),
             state: Arc::new(Mutex::new(SchedulerState {
                 jobs: HashMap::new(),
@@ -119,15 +129,22 @@ impl Scheduler {
         f(&mut self.state.lock().expect("Poisoned Mutex"))
     }
 
-    async fn supervise_runner_job(
-        &self,
-        runner_id: InternalRunnerId,
-        slurm_runner: slurm::RunnerJob,
-    ) -> anyhow::Result<()> {
-        let (metadata, slurm_runner) = slurm_runner
-            .attach()
-            .await
-            .with_context(|| "Attaching to SLURM job")?;
+    fn create_runner(&self, target: TargetId) -> InternalRunnerId {
+        let runner_info = RunnerInfo {
+            target,
+            metadata: None,
+            state: RunnerState::Queued,
+        };
+        self.with_state(|state| {
+            let runner_id = state.next_runner_id;
+            state.next_runner_id.0 += 1;
+            state.runners.insert(runner_id, runner_info);
+            runner_id
+        })
+    }
+
+    fn runner_connected(&self, runner_id: InternalRunnerId, metadata: RunnerMetadata) {
+        info!("Runner {runner_id} ({}) connected", metadata.runner_name);
 
         self.with_state(|state| {
             let info = state
@@ -135,60 +152,32 @@ impl Scheduler {
                 .get_mut(&runner_id)
                 .expect("Unknown internal runner id");
             assert!(matches!(info.state, RunnerState::Queued));
-            info.metadata = Some(metadata.clone());
+
+            let runner_name = metadata.runner_name.clone();
+            info.metadata = Some(metadata);
             info.state = RunnerState::Waiting;
 
-            let existing_by_name = state
-                .rids_by_name
-                .insert(metadata.runner_name.clone(), runner_id);
+            let existing_by_name = state.rids_by_name.insert(runner_name, runner_id);
             assert!(existing_by_name.is_none());
         });
-
-        let result = slurm_runner
-            .wait()
-            .await
-            .with_context(|| "Waiting for SLURM job");
-
-        // remove runner independent of job success
-        self.with_state(|state| {
-            (state.rids_by_name)
-                .remove(&metadata.runner_name)
-                .expect("Runner name vanished");
-            state
-                .runners
-                .remove(&runner_id)
-                .expect("Runner id vanished");
-        });
-
-        info!("SLURM job exited with status {}", result?);
-
-        Ok(())
     }
 
-    fn spawn_new_runner(&self, target: &TargetId) -> anyhow::Result<()> {
-        let runner_info = RunnerInfo {
-            target: target.clone(),
-            metadata: None,
-            state: RunnerState::Queued,
-        };
-        let runner_id = self.with_state(|state| {
-            let runner_id = state.next_runner_id;
-            state.next_runner_id.0 += 1;
-            state.runners.insert(runner_id, runner_info);
-            runner_id
+    fn runner_disconnected(&self, runner_id: InternalRunnerId) {
+        // remove runner independent of job success
+        let runner_name = self.with_state(|state| {
+            let runner_name = (state.runners)
+                .remove(&runner_id)
+                .expect("Runner id vanished")
+                .metadata
+                .expect("Runner had no metadata")
+                .runner_name;
+            (state.rids_by_name)
+                .remove(&runner_name)
+                .expect("Runner name vanished");
+            runner_name
         });
 
-        let slurm_runner = slurm::RunnerJob::spawn(&self.config_file, &target)
-            .with_context(|| "Submitting job to SLURM")?;
-
-        let handle = self.clone();
-        actix_web::rt::spawn(async move {
-            if let Err(e) = handle.supervise_runner_job(runner_id, slurm_runner).await {
-                error!("{e:#}");
-            }
-        }); // TODO manage JoinHandle in RunnerInfo
-
-        Ok(())
+        info!("Runner {runner_id} ({runner_name}) disconnected");
     }
 
     // TODO what do we actually signal with a result here? If scheduling fails, does it place the
@@ -217,11 +206,12 @@ impl Scheduler {
             job_targets
                 .iter()
                 .find(|t| util::decrement_or_remove(&mut queued_runner_targets, t))
-                .is_some()
+                .is_none()
         });
 
         for targets in &pending_job_targets {
-            self.spawn_new_runner(&targets[0])?;
+            info!("Spawning runner for target {}", targets[0].0);
+            self.executor.spawn_runner(&targets[0], self)?;
         }
 
         Ok(())
@@ -259,6 +249,7 @@ impl Scheduler {
                 }
             })?;
 
+            info!("Job {job_id} enqueued");
             self.schedule()?;
         } else {
             debug!("Runner labels {labels:?} do not match any target");
@@ -349,7 +340,12 @@ impl Scheduler {
 
     pub fn job_completed(&self, job_id: github::WorkflowJobId) {
         // It's acceptable for job_id to be unknown in case it's from a foreign job
-        self.with_state(|state| state.jobs.remove(&job_id));
+        if self
+            .with_state(|state| state.jobs.remove(&job_id))
+            .is_some()
+        {
+            info!("Job {job_id} completed")
+        }
     }
 
     pub fn snapshot_state(&self) -> SchedulerStateSnapshot {
@@ -357,5 +353,256 @@ impl Scheduler {
             jobs: state.jobs.clone(),
             runners: state.runners.clone(),
         })
+    }
+}
+
+struct SlurmExecutor;
+
+impl SlurmExecutor {
+    async fn supervise_runner_job(
+        runner_id: InternalRunnerId,
+        slurm_runner: slurm::RunnerJob,
+        scheduler: &Scheduler,
+    ) -> anyhow::Result<()> {
+        let (metadata, slurm_runner) = slurm_runner
+            .attach()
+            .await
+            .with_context(|| "Attaching to SLURM job")?;
+
+        scheduler.runner_connected(runner_id, metadata);
+
+        let result = slurm_runner
+            .wait()
+            .await
+            .with_context(|| "Waiting for SLURM job");
+
+        scheduler.runner_disconnected(runner_id);
+
+        info!("SLURM job exited with status {}", result?);
+
+        Ok(())
+    }
+}
+
+impl Executor for SlurmExecutor {
+    fn spawn_runner(&self, target: &TargetId, scheduler: &Scheduler) -> anyhow::Result<()> {
+        let runner_id = scheduler.create_runner(target.clone());
+
+        let slurm_runner = slurm::RunnerJob::spawn(&scheduler.config_file, &target)
+            .with_context(|| "Submitting job to SLURM")?;
+
+        let scheduler = scheduler.clone();
+        actix_web::rt::spawn(async move {
+            if let Err(e) = Self::supervise_runner_job(runner_id, slurm_runner, &scheduler).await {
+                error!("{e:#}");
+            }
+        }); // TODO manage JoinHandle in RunnerInfo
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+use {
+    crate::config::{
+        Config, GithubConfig, HttpConfig, RunnerConfig, RunnerRegistrationConfig, SlurmConfig,
+    },
+    crate::github::ApiToken,
+    std::path::PathBuf,
+};
+
+#[cfg(test)]
+struct MockExecutor {
+    runners: Mutex<Vec<(InternalRunnerId, TargetId)>>,
+}
+
+#[cfg(test)]
+impl MockExecutor {
+    fn new() -> Self {
+        MockExecutor {
+            runners: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn take_runners(&self) -> Vec<(InternalRunnerId, TargetId)> {
+        std::mem::take(&mut self.runners.lock().unwrap())
+    }
+}
+
+#[cfg(test)]
+impl Executor for MockExecutor {
+    fn spawn_runner(&self, target: &TargetId, scheduler: &Scheduler) -> anyhow::Result<()> {
+        let rid = scheduler.create_runner(target.clone());
+        self.runners.lock().unwrap().push((rid, target.clone()));
+        Ok(())
+    }
+}
+
+#[test]
+fn test_scheduler() {
+    env_logger::init();
+
+    let config = Config {
+        http: HttpConfig {
+            bind: "".to_string(),
+            secret: "".to_string(),
+        },
+        github: GithubConfig {
+            entity: github::Entity::Repository("foo".to_owned(), "bar".to_owned()),
+            api_token: ApiToken(Default::default()),
+        },
+        slurm: SlurmConfig {
+            srun: Default::default(),
+            squeue: Default::default(),
+            srun_options: vec![],
+            srun_env: Default::default(),
+            job_name: "job".to_owned(),
+        },
+        runner: RunnerConfig {
+            platform: "none".to_owned(),
+            work_dir: Default::default(),
+            registration: RunnerRegistrationConfig {
+                name: "runner".to_owned(),
+                labels: vec!["base-label-1".to_owned(), "base-label-2".to_owned()],
+            },
+            listen_timeout_s: 0,
+        },
+        targets: HashMap::from([
+            (
+                TargetId("target-a".to_owned()),
+                TargetConfig {
+                    runner_labels: vec!["a-label-1".to_owned()],
+                    srun_options: vec![],
+                    srun_env: Default::default(),
+                },
+            ),
+            (
+                TargetId("target-b".to_owned()),
+                TargetConfig {
+                    runner_labels: vec!["b-label-1".to_owned(), "b-label-2".to_owned()],
+                    srun_options: vec![],
+                    srun_env: Default::default(),
+                },
+            ),
+        ]),
+    };
+
+    let config_file = ConfigFile {
+        config,
+        path: PathBuf::from("/path/to/config"),
+    };
+
+    let executor = Arc::new(MockExecutor::new());
+    let scheduler = Scheduler::with_executor(executor.clone(), config_file);
+
+    scheduler
+        .job_enqueued(
+            github::WorkflowJobId(1),
+            "job 1",
+            "http://job1",
+            &["base-label-1".to_owned(), "a-label-1".to_owned()],
+        )
+        .unwrap();
+
+    {
+        let state = scheduler.snapshot_state();
+        assert_eq!(state.jobs.len(), 1);
+        assert_eq!(state.runners.len(), 1);
+    }
+
+    {
+        let runners = executor.take_runners();
+        assert_eq!(runners.len(), 1);
+        assert_eq!(runners[0].1 .0, "target-a".to_owned());
+        let runner_id = runners[0].0;
+
+        scheduler.runner_connected(
+            runner_id,
+            RunnerMetadata {
+                slurm_job: slurm::JobId(0),
+                runner_name: "runner-a-0".to_string(),
+                concurrent_id: 0,
+            },
+        );
+
+        // our runner picks up a foreign job, causing a reschedule
+        scheduler
+            .job_processing(github::WorkflowJobId(2), "runner-a-0")
+            .unwrap();
+        scheduler.job_completed(github::WorkflowJobId(2));
+        scheduler.runner_disconnected(runner_id);
+    }
+
+    {
+        let state = scheduler.snapshot_state();
+        assert_eq!(state.jobs.len(), 1);
+        assert_eq!(state.runners.len(), 1);
+    }
+
+    {
+        let runners = executor.take_runners();
+        assert_eq!(runners.len(), 1);
+        assert_eq!(runners[0].1 .0, "target-a".to_owned());
+        let runner_id = runners[0].0;
+
+        scheduler.runner_connected(
+            runner_id,
+            RunnerMetadata {
+                slurm_job: slurm::JobId(0),
+                runner_name: "runner-a-1".to_string(),
+                concurrent_id: 0,
+            },
+        );
+
+        // the re-scheduled runner now picks up our job
+        scheduler
+            .job_processing(github::WorkflowJobId(1), "runner-a-1")
+            .unwrap();
+        scheduler.job_completed(github::WorkflowJobId(1));
+        scheduler.runner_disconnected(runner_id);
+    }
+
+    {
+        let state = scheduler.snapshot_state();
+        assert!(state.jobs.is_empty());
+        assert!(state.runners.is_empty());
+    }
+
+    scheduler
+        .job_enqueued(
+            github::WorkflowJobId(3),
+            "job 3",
+            "http://job3",
+            &["base-label-1".to_owned(), "b-label-1".to_owned()],
+        )
+        .unwrap();
+
+    {
+        let runners = executor.take_runners();
+        assert_eq!(runners.len(), 1);
+        assert_eq!(runners[0].1 .0, "target-b".to_owned());
+        let runner_id = runners[0].0;
+
+        scheduler.runner_connected(
+            runner_id,
+            RunnerMetadata {
+                slurm_job: slurm::JobId(0),
+                runner_name: "runner-b-0".to_string(),
+                concurrent_id: 0,
+            },
+        );
+
+        // a foreign runner picks up our job
+        scheduler
+            .job_processing(github::WorkflowJobId(3), "foreign-runner-0")
+            .unwrap();
+        scheduler.job_completed(github::WorkflowJobId(3));
+        scheduler.runner_disconnected(runner_id); // due to timeout
+    }
+
+    {
+        let state = scheduler.snapshot_state();
+        assert!(state.jobs.is_empty());
+        assert!(state.runners.is_empty());
     }
 }
