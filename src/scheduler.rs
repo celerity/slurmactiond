@@ -144,40 +144,49 @@ impl Scheduler {
     }
 
     fn runner_connected(&self, runner_id: InternalRunnerId, metadata: RunnerMetadata) {
-        info!("Runner {runner_id} ({}) connected", metadata.runner_name);
+        let runner_name = metadata.runner_name.clone();
 
-        self.with_state(|state| {
+        let target = self.with_state(|state| {
             let info = state
                 .runners
                 .get_mut(&runner_id)
                 .expect("Unknown internal runner id");
             assert!(matches!(info.state, RunnerState::Queued));
 
-            let runner_name = metadata.runner_name.clone();
             info.metadata = Some(metadata);
             info.state = RunnerState::Waiting;
 
-            let existing_by_name = state.rids_by_name.insert(runner_name, runner_id);
+            let existing_by_name = state.rids_by_name.insert(runner_name.clone(), runner_id);
             assert!(existing_by_name.is_none());
+
+            info.target.clone()
         });
+
+        info!("Runner {runner_id} ({runner_name}) connected for target {}", target.0);
     }
 
     fn runner_disconnected(&self, runner_id: InternalRunnerId) {
         // remove runner independent of job success
-        let runner_name = self.with_state(|state| {
-            let runner_name = (state.runners)
+        let (runner_name, runner_state) = self.with_state(|state| {
+            let info = (state.runners)
                 .remove(&runner_id)
-                .expect("Runner id vanished")
-                .metadata
-                .expect("Runner had no metadata")
-                .runner_name;
+                .expect("Runner id vanished");
+            let runner_name = info.metadata.expect("Runner had no metadata").runner_name;
             (state.rids_by_name)
                 .remove(&runner_name)
                 .expect("Runner name vanished");
-            runner_name
+            (runner_name, info.state)
         });
 
-        info!("Runner {runner_id} ({runner_name}) disconnected");
+        match runner_state {
+            RunnerState::Queued | RunnerState::Waiting => {
+                warn!("Runner {runner_id} ({runner_name}) disconnected {detail}",
+                    detail=concat!("without having picked up a job. This might be due to a ",
+                        "timeout or a foreign runner picking up our jobs."));
+                self.schedule().unwrap_or_else(|e| error!("{e:#}"))
+            }
+            RunnerState::Running(_) => info!("Runner {runner_id} ({runner_name}) disconnected"),
+        }
     }
 
     // TODO what do we actually signal with a result here? If scheduling fails, does it place the
@@ -598,6 +607,69 @@ fn test_scheduler() {
             .unwrap();
         scheduler.job_completed(github::WorkflowJobId(3));
         scheduler.runner_disconnected(runner_id); // due to timeout
+    }
+
+    {
+        let state = scheduler.snapshot_state();
+        assert!(state.jobs.is_empty());
+        assert!(state.runners.is_empty());
+    }
+
+    scheduler
+        .job_enqueued(
+            github::WorkflowJobId(4),
+            "job 4",
+            "http://job4",
+            &["base-label-1".to_owned(), "b-label-1".to_owned()],
+        )
+        .unwrap();
+
+    {
+        let runners = executor.take_runners();
+        assert_eq!(runners.len(), 1);
+        assert_eq!(runners[0].1 .0, "target-b".to_owned());
+        let runner_id = runners[0].0;
+
+        scheduler.runner_connected(
+            runner_id,
+            RunnerMetadata {
+                slurm_job: slurm::JobId(0),
+                runner_name: "runner-b-0".to_string(),
+                concurrent_id: 0,
+            },
+        );
+
+        // spurious runner timeout - requires a reschedule
+        scheduler.runner_disconnected(runner_id);
+    }
+
+    {
+        let state = scheduler.snapshot_state();
+        assert_eq!(state.jobs.len(), 1);
+        assert_eq!(state.runners.len(), 1);
+    }
+
+    {
+        let runners = executor.take_runners();
+        assert_eq!(runners.len(), 1);
+        assert_eq!(runners[0].1 .0, "target-b".to_owned());
+        let runner_id = runners[0].0;
+
+        scheduler.runner_connected(
+            runner_id,
+            RunnerMetadata {
+                slurm_job: slurm::JobId(0),
+                runner_name: "runner-b-2".to_string(),
+                concurrent_id: 0,
+            },
+        );
+
+        // the re-scheduled runner now picks up our job
+        scheduler
+            .job_processing(github::WorkflowJobId(4), "runner-b-2")
+            .unwrap();
+        scheduler.job_completed(github::WorkflowJobId(4));
+        scheduler.runner_disconnected(runner_id);
     }
 
     {
