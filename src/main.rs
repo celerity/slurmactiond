@@ -52,6 +52,7 @@ fn configure_logger(cmd: &Command) {
     }
 
     builder.filter_module("h2", LevelFilter::Info);
+    builder.filter_module("handlebars", LevelFilter::Info);
     builder.init();
 }
 
