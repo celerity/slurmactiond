@@ -308,7 +308,7 @@ fn test_render_index() {
                 WorkflowJobInfo {
                     name: "Job B".to_owned(),
                     url: "https://github.com/octo-org/example-workflow/runs/2".to_owned(),
-                    state: WorkflowJobState::Pending(vec![TargetId("label".to_owned())]),
+                    state: WorkflowJobState::InProgressOnForeignRunner("foreign".to_owned()),
                 },
             ),
             (
@@ -339,6 +339,14 @@ fn test_render_index() {
                     target: config::TargetId("target-b".to_string()),
                     metadata: None,
                     state: RunnerState::Queued,
+                },
+            ),
+            (
+                InternalRunnerId(3),
+                RunnerInfo {
+                    target: config::TargetId("target-b".to_string()),
+                    metadata: None,
+                    state: RunnerState::Waiting,
                 },
             ),
         ]),

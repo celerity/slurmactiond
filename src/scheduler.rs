@@ -162,7 +162,10 @@ impl Scheduler {
             info.target.clone()
         });
 
-        info!("Runner {runner_id} ({runner_name}) connected for target {}", target.0);
+        info!(
+            "Runner {runner_id} ({runner_name}) connected for target {}",
+            target.0
+        );
     }
 
     fn runner_disconnected(&self, runner_id: InternalRunnerId) {
@@ -180,9 +183,13 @@ impl Scheduler {
 
         match runner_state {
             RunnerState::Queued | RunnerState::Waiting => {
-                warn!("Runner {runner_id} ({runner_name}) disconnected {detail}",
-                    detail=concat!("without having picked up a job. This might be due to a ",
-                        "timeout or a foreign runner picking up our jobs."));
+                warn!(
+                    "Runner {runner_id} ({runner_name}) disconnected {detail}",
+                    detail = concat!(
+                        "without having picked up a job. This might be due to a ",
+                        "timeout or a foreign runner picking up our jobs."
+                    )
+                );
                 self.schedule().unwrap_or_else(|e| error!("{e:#}"))
             }
             RunnerState::Running(_) => info!("Runner {runner_id} ({runner_name}) disconnected"),

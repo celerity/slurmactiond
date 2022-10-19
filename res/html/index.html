@@ -10,17 +10,21 @@
     <ul>
     {{#each jobs}}
         <li><a href="{{url}}">{{@key}}</a> ({{name}}):
-        {{~#if state.InProgress}} In Progress on SLURM job {{state.InProgress}}
-        {{~else}} {{state}}
+        {{~#if state.InProgress}} In Progress on R{{state.InProgress}}
+        {{~else}}
+        {{~#if state.InProgressOnForeignRunner}} In Progress on <b>foreign runner</b> <i>{{state.InProgressOnForeignRunner}}</i>
+        {{~else}} Pending for one of [{{#each state.Pending}}{{this}}{{#if (not @last)}}, {{/if}}{{/each}}]
+        {{~/if}}
         {{~/if}}</li>
     {{/each}}
     </ul>
     <h2>Active Runners</h2>
     <ul>
     {{#each runners}}
-        <li>{{@key}} ({{this.target}}):
-        {{~#if state.Active}} Running as {{state.Active.runner_name}} (SLURM job {{state.Active.slurm_job}})
-        {{~else}} Queued
+        <li>R{{@key}} ({{this.target}}):
+        {{~#if metadata}} {{metadata.runner_name}} (SLURM job {{metadata.slurm_job}}),{{/if}}
+        {{~#if state.Running}} Running job {{state.Running}}
+        {{~else}} {{state}}
         {{~/if}}</li>
     {{/each}}
     </ul>
