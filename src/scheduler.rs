@@ -200,7 +200,7 @@ impl Scheduler {
     //  scheduler in some permanent invalid state, will we try again next time, and can we find a
     //  way to avoid endlessly re-trying a failing operation?
     fn schedule(&self) -> anyhow::Result<()> {
-        let (mut pending_job_targets, mut queued_runner_targets) = self.with_state(|state| {
+        let (mut pending_job_targets, mut unassigned_runner_targets) = self.with_state(|state| {
             let pending_job_targets: Vec<_> = (state.jobs)
                 .iter()
                 .filter_map(|(_, info)| match &info.state {
@@ -209,19 +209,19 @@ impl Scheduler {
                 })
                 .collect();
 
-            let mut queued_runner_targets = HashMap::new();
+            let mut unassigned_runner_targets = HashMap::new();
             for (_, info) in &state.runners {
-                if let RunnerState::Queued = info.state {
-                    util::increment_or_insert(&mut queued_runner_targets, &info.target);
+                if let RunnerState::Queued | RunnerState::Waiting = info.state {
+                    util::increment_or_insert(&mut unassigned_runner_targets, &info.target);
                 }
             }
-            (pending_job_targets, queued_runner_targets)
+            (pending_job_targets, unassigned_runner_targets)
         });
 
         pending_job_targets.retain(|job_targets| {
             job_targets
                 .iter()
-                .find(|t| util::decrement_or_remove(&mut queued_runner_targets, t))
+                .find(|t| util::decrement_or_remove(&mut unassigned_runner_targets, t))
                 .is_none()
         });
 
