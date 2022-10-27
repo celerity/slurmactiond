@@ -300,14 +300,13 @@ fn test_render_index() {
         WorkflowJobState,
     };
     use crate::slurm;
-    use std::collections::HashMap;
 
     let mut handlebars = Handlebars::new();
     handlebars
         .register_template_string("index", include_str!("../res/html/index.html"))
         .unwrap();
     let state = SchedulerStateSnapshot {
-        jobs: HashMap::from([
+        jobs: vec![
             (
                 WorkflowJobId(123),
                 WorkflowJobInfo {
@@ -332,8 +331,8 @@ fn test_render_index() {
                     state: WorkflowJobState::InProgress(scheduler::RunnerId(1)),
                 },
             ),
-        ]),
-        runners: HashMap::from([
+        ],
+        runners: vec![
             (
                 scheduler::RunnerId(1),
                 RunnerInfo {
@@ -362,7 +361,7 @@ fn test_render_index() {
                     state: RunnerState::Waiting,
                 },
             ),
-        ]),
+        ],
     };
     println!("{}", handlebars.render("index", &state).unwrap());
 }
