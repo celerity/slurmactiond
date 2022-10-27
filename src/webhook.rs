@@ -13,7 +13,8 @@ use serde::Deserialize;
 use crate::config::{ConfigFile, GithubConfig, HttpConfig};
 use crate::github;
 use crate::github::{WorkflowJob, WorkflowStatus};
-use crate::scheduler::{self, Scheduler, SlurmExecutor};
+use crate::scheduler::{self, Scheduler};
+use crate::slurm::SlurmExecutor;
 
 type StaticContent = (&'static str, StatusCode);
 type StaticResult = actix_web::Result<StaticContent>;
@@ -228,7 +229,16 @@ async fn schedule_all_pending_jobs(github_config: &GithubConfig, scheduler: &Arc
 
 #[actix_web::main]
 pub async fn main(config_file: ConfigFile) -> anyhow::Result<()> {
-    let scheduler = Arc::new(Scheduler::new(Box::new(SlurmExecutor), config_file.clone()));
+    let runner_labels = config_file.config.runner.registration.labels.clone();
+    let targets_with_labels = (config_file.config.targets.iter())
+        .map(|(t, c)| (t.clone(), c.runner_labels.clone()))
+        .collect();
+
+    let scheduler = Arc::new(Scheduler::new(
+        Box::new(SlurmExecutor::new(config_file.clone())),
+        runner_labels,
+        targets_with_labels,
+    ));
 
     let mut handlebars = Handlebars::new();
     handlebars
@@ -283,11 +293,10 @@ fn test_deserialize_payload() {
 
 #[test]
 fn test_render_index() {
-    use crate::config::{self, TargetId};
     use crate::github::WorkflowJobId;
     use crate::ipc::RunnerMetadata;
     use crate::scheduler::{
-        InternalRunnerId, RunnerInfo, RunnerState, SchedulerStateSnapshot, WorkflowJobInfo,
+        RunnerInfo, RunnerState, SchedulerStateSnapshot, TargetId, WorkflowJobInfo,
         WorkflowJobState,
     };
     use crate::slurm;
@@ -320,15 +329,15 @@ fn test_render_index() {
                 WorkflowJobInfo {
                     name: "Job C".to_owned(),
                     url: "https://github.com/octo-org/example-workflow/runs/3".to_owned(),
-                    state: WorkflowJobState::InProgress(InternalRunnerId(1)),
+                    state: WorkflowJobState::InProgress(scheduler::RunnerId(1)),
                 },
             ),
         ]),
         runners: HashMap::from([
             (
-                InternalRunnerId(1),
+                scheduler::RunnerId(1),
                 RunnerInfo {
-                    target: config::TargetId("target-a".to_string()),
+                    target: TargetId("target-a".to_string()),
                     metadata: Some(RunnerMetadata {
                         runner_name: "runner-1".to_owned(),
                         slurm_job: slurm::JobId(999),
@@ -338,17 +347,17 @@ fn test_render_index() {
                 },
             ),
             (
-                InternalRunnerId(2),
+                scheduler::RunnerId(2),
                 RunnerInfo {
-                    target: config::TargetId("target-b".to_string()),
+                    target: TargetId("target-b".to_string()),
                     metadata: None,
                     state: RunnerState::Queued,
                 },
             ),
             (
-                InternalRunnerId(3),
+                scheduler::RunnerId(3),
                 RunnerInfo {
-                    target: config::TargetId("target-b".to_string()),
+                    target: TargetId("target-b".to_string()),
                     metadata: None,
                     state: RunnerState::Waiting,
                 },

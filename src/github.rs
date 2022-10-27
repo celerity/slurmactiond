@@ -10,28 +10,16 @@ use awc::http::Method;
 use awc::{http::header, Client, SendClientRequest};
 use log::{debug, info};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-// A workflow _run_ refers to a collection of jobs, created by a trigger.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct WorkflowRunId(pub u64);
+util::literal_types! {
+    // A workflow _run_ refers to a collection of jobs, created by a trigger.
+    #[derive(Copy)]
+    pub struct WorkflowRunId(pub u64);
 
-impl Display for WorkflowRunId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-// A workflow _job_ identifies the unit of work that will be picked up by a runner.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct WorkflowJobId(pub u64);
-
-impl Display for WorkflowJobId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
+    // A workflow _job_ identifies the unit of work that will be picked up by a runner.
+    #[derive(Copy)]
+    pub struct WorkflowJobId(pub u64);
 }
 
 #[derive(Clone, Deserialize, Debug, PartialEq, Eq)]
@@ -69,19 +57,11 @@ impl TryFrom<&str> for Entity {
     }
 }
 
-#[derive(Clone, Deserialize, PartialEq, Eq)]
-#[serde(transparent)]
-pub struct ApiToken(pub String);
+util::literal_types! {
+    pub struct ApiToken(pub String);
 
-impl Display for ApiToken {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
+    pub struct RunnerRegistrationToken(pub String);
 }
-
-#[derive(Deserialize, Debug, PartialEq, Eq)]
-#[serde(transparent)]
-pub struct RunnerRegistrationToken(pub String);
 
 #[derive(Deserialize)]
 struct TokenPayload {

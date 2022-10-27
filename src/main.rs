@@ -9,7 +9,8 @@ use clap::{Parser, Subcommand};
 use log::error;
 use nix::unistd::isatty;
 
-use crate::config::{ConfigFile, TargetId};
+use crate::config::ConfigFile;
+use crate::scheduler::TargetId;
 
 mod config;
 mod file_io;

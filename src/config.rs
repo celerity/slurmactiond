@@ -1,12 +1,10 @@
 use anyhow::Context;
+use serde::Deserialize;
 use std::collections::HashMap;
-use std::convert::Infallible;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
-
-use serde::{Deserialize, Serialize};
 
 use crate::github;
+use crate::scheduler::{Label, TargetId};
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,22 +30,10 @@ impl SlurmConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Hash, PartialEq, Eq, Clone)]
-#[serde(transparent)]
-pub struct TargetId(pub String);
-
-impl FromStr for TargetId {
-    type Err = Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(TargetId(s.to_owned()))
-    }
-}
-
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetConfig {
-    pub runner_labels: Vec<String>,
+    pub runner_labels: Vec<Label>,
     #[serde(default)]
     pub srun_options: Vec<String>,
     #[serde(default)]
@@ -66,7 +52,7 @@ pub struct GithubConfig {
 pub struct RunnerRegistrationConfig {
     pub name: String,
     #[serde(default)]
-    pub labels: Vec<String>,
+    pub labels: Vec<Label>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -103,6 +89,8 @@ pub struct Config {
     #[serde(default)]
     pub targets: HashMap<TargetId, TargetConfig>,
 }
+
+impl Config {}
 
 #[derive(Clone)]
 pub struct ConfigFile {

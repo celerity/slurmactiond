@@ -11,9 +11,10 @@ use nix::sys::signal::{kill, Signal};
 use nix::unistd::{gethostname, Pid};
 use tokio::process::Command;
 
-use crate::config::{ConfigFile, RunnerConfig, TargetId};
+use crate::config::{ConfigFile, RunnerConfig};
 use crate::file_io::WorkDir;
 use crate::github::RunnerRegistrationToken;
+use crate::scheduler::TargetId;
 use crate::util::{
     async_retry_after, log_child_output, ChildStream, CommandOutputStreamExt as _,
     ResultSuccessExt as _,
@@ -175,13 +176,13 @@ pub async fn run(
     const API_COOLDOWN: Duration = Duration::from_secs(30);
 
     let cfg = &config_file.config;
-    let runner_name = format!("{}-{}-{}", cfg.runner.registration.name, target.0, job);
+    let runner_name = format!("{}-{}-{}", cfg.runner.registration.name, target, job);
 
     let active_jobs = slurm::active_jobs(&cfg)
         .await
         .with_context(|| "Error listing active slurm jobs")?;
 
-    let work_dir = WorkDir::lock(&cfg.runner.work_dir.join(&target.0), job, &active_jobs)
+    let work_dir = WorkDir::lock(&cfg.runner.work_dir.join(&*target), job, &active_jobs)
         .with_context(|| "Cannot lock private working directory")?;
 
     let metadata = ipc::RunnerMetadata {

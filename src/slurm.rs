@@ -1,36 +1,21 @@
 use std::ffi::OsString;
-use std::fmt::{Display, Formatter};
-use std::num::ParseIntError;
 use std::process::{ExitStatus, Stdio};
-use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::Context as _;
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use nix::unistd::getuid;
-use serde::{Deserialize, Serialize};
 use tokio::process::{Child, Command};
 
-use crate::config::{Config, ConfigFile, TargetId};
+use crate::config::{Config, ConfigFile};
 use crate::ipc;
 use crate::ipc::RunnerMetadata;
-use crate::util::{ChildStream, ChildStreamMux, ResultSuccessExt as _};
+use crate::scheduler::{self, Scheduler, TargetId};
+use crate::util::{self, ChildStream, ChildStreamMux, ResultSuccessExt as _};
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct JobId(pub u64);
-
-impl Display for JobId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl FromStr for JobId {
-    type Err = ParseIntError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.parse().map(JobId)
-    }
+util::literal_types! {
+    #[derive(Copy)]
+    pub struct JobId(pub u64);
 }
 
 const JOB_ID_VAR: &str = "SLURM_JOB_ID";
@@ -90,7 +75,7 @@ impl RunnerJob {
     pub fn spawn(config_file: &ConfigFile, target: &TargetId) -> anyhow::Result<RunnerJob> {
         let cfg = &config_file.config;
 
-        let name = format!("{}-{}", &cfg.slurm.job_name, &target.0);
+        let name = format!("{}-{}", &cfg.slurm.job_name, &target);
         let executable = std::env::current_exe()
             .with_context(|| "Cannot determine current executable name")?
             .as_os_str()
@@ -198,4 +183,56 @@ pub fn job_has_terminated(job: JobId, active_jobs: &[JobId]) -> bool {
     // this test races with the enqueueing of new jobs, so we have to conservatively assume that
     // a job newer than all active jobs has not terminated yet.
     !active_jobs.contains(&job) && active_jobs.iter().any(|a| a.0 > job.0)
+}
+
+pub struct SlurmExecutor {
+    config_file: ConfigFile,
+}
+
+impl SlurmExecutor {
+    pub fn new(config_file: ConfigFile) -> Self {
+        SlurmExecutor { config_file }
+    }
+
+    async fn supervise_runner_job(
+        runner_id: scheduler::RunnerId,
+        slurm_runner: RunnerJob,
+        scheduler: &Arc<Scheduler>,
+    ) -> anyhow::Result<()> {
+        let (metadata, slurm_runner) = slurm_runner
+            .attach()
+            .await
+            .with_context(|| "Attaching to SLURM job")?;
+
+        scheduler.runner_connected(runner_id, metadata);
+
+        let result = slurm_runner
+            .wait()
+            .await
+            .with_context(|| "Waiting for SLURM job");
+
+        scheduler.runner_disconnected(runner_id);
+
+        info!("SLURM job exited with status {}", result?);
+
+        Ok(())
+    }
+}
+
+impl scheduler::Executor for SlurmExecutor {
+    fn spawn_runner(&self, target: &TargetId, scheduler: &Arc<Scheduler>) -> anyhow::Result<()> {
+        let runner_id = scheduler.create_runner(target.clone());
+
+        let slurm_runner = RunnerJob::spawn(&self.config_file, &target)
+            .with_context(|| "Submitting job to SLURM")?;
+
+        let scheduler = scheduler.clone();
+        actix_web::rt::spawn(async move {
+            if let Err(e) = Self::supervise_runner_job(runner_id, slurm_runner, &scheduler).await {
+                error!("{e:#}");
+            }
+        }); // TODO manage JoinHandle in RunnerInfo
+
+        Ok(())
+    }
 }

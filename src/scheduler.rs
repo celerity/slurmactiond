@@ -1,56 +1,26 @@
-use crate::config::{ConfigFile, TargetConfig, TargetId};
+use crate::github;
 use crate::ipc::RunnerMetadata;
 use crate::util;
-use crate::{github, slurm};
-use anyhow::Context as _;
 use log::{debug, error, info, warn};
 use serde::Serialize;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
-fn match_targets<'t, T>(
-    job_labels: &[String],
-    runner_labels: &[String],
-    targets: &'t T,
-) -> Vec<TargetId>
-where
-    &'t T: IntoIterator<Item = (&'t TargetId, &'t TargetConfig)>,
-{
-    // GitHub only includes the "self-hosted" label if the set of labels is otherwise empty.
-    // We don't require the user to list "self-hosted" in the config.
-    let unmatched_labels: Vec<_> = (job_labels.iter())
-        .filter(|l| !(*l == "self-hosted" || runner_labels.contains(*l)))
-        .map(String::clone)
-        .collect();
-    let mut matching_target_distances: Vec<_> = targets
-        .into_iter()
-        .filter(|(_, t)| unmatched_labels.iter().all(|l| t.runner_labels.contains(l)))
-        .map(|(id, t)| (id, t.runner_labels.len()))
-        .collect();
-    matching_target_distances.sort_by_key(|(_, len)| *len);
-    matching_target_distances
-        .iter()
-        .map(|(id, _)| (*id).clone())
-        .collect()
-}
+pub type Label = String;
 
-#[derive(Copy, Clone, Serialize, Debug, PartialEq, Eq, Hash)]
-#[serde(transparent)]
-pub struct InternalRunnerId(pub u32);
+util::literal_types! {
+    pub struct TargetId(pub String);
 
-impl Display for InternalRunnerId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "R{}", self.0)
-    }
+    #[derive(Copy)]
+    pub struct RunnerId(pub u32);
 }
 
 #[derive(Clone, Serialize, Debug, PartialEq, Eq)]
 pub enum WorkflowJobState {
     Pending(Vec<TargetId>),
-    InProgress(InternalRunnerId),
+    InProgress(RunnerId),
     InProgressOnForeignRunner(String),
 }
 
@@ -77,15 +47,15 @@ pub struct RunnerInfo {
 
 struct SchedulerState {
     jobs: HashMap<github::WorkflowJobId, WorkflowJobInfo>,
-    runners: HashMap<InternalRunnerId, RunnerInfo>,
-    rids_by_name: HashMap<String, InternalRunnerId>,
-    next_runner_id: InternalRunnerId,
+    runners: HashMap<RunnerId, RunnerInfo>,
+    rids_by_name: HashMap<String, RunnerId>,
+    next_runner_id: RunnerId,
 }
 
 #[derive(Clone, Serialize)]
 pub struct SchedulerStateSnapshot {
     pub jobs: HashMap<github::WorkflowJobId, WorkflowJobInfo>,
-    pub runners: HashMap<InternalRunnerId, RunnerInfo>,
+    pub runners: HashMap<RunnerId, RunnerInfo>,
 }
 
 pub trait Executor {
@@ -94,7 +64,8 @@ pub trait Executor {
 
 pub struct Scheduler {
     executor: Box<dyn Executor + Send + Sync>,
-    config_file: ConfigFile,
+    runner_labels: Vec<Label>,
+    targets_with_labels: Vec<(TargetId, Vec<Label>)>,
     state: Mutex<SchedulerState>,
 }
 
@@ -107,15 +78,20 @@ pub enum Error {
 }
 
 impl Scheduler {
-    pub fn new(executor: Box<dyn Executor + Send + Sync>, config_file: ConfigFile) -> Self {
+    pub fn new(
+        executor: Box<dyn Executor + Send + Sync>,
+        runner_labels: Vec<Label>,
+        targets_with_labels: Vec<(TargetId, Vec<Label>)>,
+    ) -> Self {
         Scheduler {
             executor,
-            config_file,
+            runner_labels,
+            targets_with_labels,
             state: Mutex::new(SchedulerState {
                 jobs: HashMap::new(),
                 runners: HashMap::new(),
                 rids_by_name: HashMap::new(),
-                next_runner_id: InternalRunnerId(0),
+                next_runner_id: RunnerId(0),
             }),
         }
     }
@@ -124,7 +100,7 @@ impl Scheduler {
         f(&mut self.state.lock().expect("Poisoned Mutex"))
     }
 
-    fn create_runner(&self, target: TargetId) -> InternalRunnerId {
+    pub fn create_runner(&self, target: TargetId) -> RunnerId {
         let runner_info = RunnerInfo {
             target,
             metadata: None,
@@ -138,7 +114,7 @@ impl Scheduler {
         })
     }
 
-    fn runner_connected(self: &Arc<Self>, runner_id: InternalRunnerId, metadata: RunnerMetadata) {
+    pub fn runner_connected(self: &Arc<Self>, runner_id: RunnerId, metadata: RunnerMetadata) {
         let runner_name = metadata.runner_name.clone();
 
         let target = self.with_state(|state| {
@@ -157,13 +133,10 @@ impl Scheduler {
             info.target.clone()
         });
 
-        info!(
-            "Runner {runner_id} ({runner_name}) connected for target {}",
-            target.0
-        );
+        info!("Runner {runner_id} ({runner_name}) connected for target {target}");
     }
 
-    fn runner_disconnected(self: &Arc<Self>, runner_id: InternalRunnerId) {
+    pub fn runner_disconnected(self: &Arc<Self>, runner_id: RunnerId) {
         // remove runner independent of job success
         let (runner_name, runner_state) = self.with_state(|state| {
             let info = (state.runners)
@@ -221,11 +194,30 @@ impl Scheduler {
         });
 
         for targets in &pending_job_targets {
-            info!("Spawning runner for target {}", targets[0].0);
+            info!("Spawning runner for target {}", targets[0]);
             self.executor.spawn_runner(&targets[0], self)?;
         }
 
         Ok(())
+    }
+
+    fn match_targets(&self, job_labels: &[Label]) -> Vec<TargetId> {
+        // GitHub only includes the "self-hosted" label if the set of labels is otherwise empty.
+        // We don't require the user to list "self-hosted" in the config.
+        let unmatched_labels: Vec<_> = (job_labels.iter())
+            .filter(|jl| !(*jl == "self-hosted" || self.runner_labels.contains(*jl)))
+            .collect();
+        let mut matching_target_distances: Vec<_> = self
+            .targets_with_labels
+            .iter()
+            .filter(|(_, tls)| unmatched_labels.iter().all(|jl| tls.contains(jl)))
+            .map(|(t, tls)| (t, tls.len()))
+            .collect();
+        matching_target_distances.sort_by_key(|(_, len)| *len);
+        matching_target_distances
+            .into_iter()
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     pub fn job_enqueued<'c>(
@@ -235,11 +227,7 @@ impl Scheduler {
         url: &str,
         labels: &[String],
     ) -> Result<(), Error> {
-        let targets = match_targets(
-            labels,
-            &self.config_file.config.runner.registration.labels,
-            &self.config_file.config.targets,
-        );
+        let targets = self.match_targets(labels);
         if !targets.is_empty() {
             debug!("Matched labels {labels:?} of job {job_id} to targets {targets:?}");
 
@@ -275,11 +263,11 @@ impl Scheduler {
         runner_name: &str,
     ) -> Result<(), Error> {
         enum Transition {
-            RunnerPickedUpPendingJob(InternalRunnerId),
-            RunnerStoleForeignJob(InternalRunnerId),
+            RunnerPickedUpPendingJob(RunnerId),
+            RunnerStoleForeignJob(RunnerId),
             ForeignRunnerStolePendingJob,
             JobNotPending,
-            RunnerNotWaiting(InternalRunnerId),
+            RunnerNotWaiting(RunnerId),
             ForeignRunnerPickedUpForeignJob,
         }
 
@@ -367,71 +355,18 @@ impl Scheduler {
     }
 }
 
-#[derive(Default)]
-pub struct SlurmExecutor;
-
-impl SlurmExecutor {
-    async fn supervise_runner_job(
-        runner_id: InternalRunnerId,
-        slurm_runner: slurm::RunnerJob,
-        scheduler: &Arc<Scheduler>,
-    ) -> anyhow::Result<()> {
-        let (metadata, slurm_runner) = slurm_runner
-            .attach()
-            .await
-            .with_context(|| "Attaching to SLURM job")?;
-
-        scheduler.runner_connected(runner_id, metadata);
-
-        let result = slurm_runner
-            .wait()
-            .await
-            .with_context(|| "Waiting for SLURM job");
-
-        scheduler.runner_disconnected(runner_id);
-
-        info!("SLURM job exited with status {}", result?);
-
-        Ok(())
-    }
-}
-
-impl Executor for SlurmExecutor {
-    fn spawn_runner(&self, target: &TargetId, scheduler: &Arc<Scheduler>) -> anyhow::Result<()> {
-        let runner_id = scheduler.create_runner(target.clone());
-
-        let slurm_runner = slurm::RunnerJob::spawn(&scheduler.config_file, &target)
-            .with_context(|| "Submitting job to SLURM")?;
-
-        let scheduler = scheduler.clone();
-        actix_web::rt::spawn(async move {
-            if let Err(e) = Self::supervise_runner_job(runner_id, slurm_runner, &scheduler).await {
-                error!("{e:#}");
-            }
-        }); // TODO manage JoinHandle in RunnerInfo
-
-        Ok(())
-    }
-}
-
 #[cfg(test)]
-use {
-    crate::config::{
-        Config, GithubConfig, HttpConfig, RunnerConfig, RunnerRegistrationConfig, SlurmConfig,
-    },
-    crate::github::ApiToken,
-    std::path::PathBuf,
-};
+use crate::slurm;
 
 #[cfg(test)]
 #[derive(Default, Clone)]
 struct MockExecutor {
-    runners: Arc<Mutex<Vec<(InternalRunnerId, TargetId)>>>,
+    runners: Arc<Mutex<Vec<(RunnerId, TargetId)>>>,
 }
 
 #[cfg(test)]
 impl MockExecutor {
-    fn take_runners(&self) -> Vec<(InternalRunnerId, TargetId)> {
+    fn take_runners(&self) -> Vec<(RunnerId, TargetId)> {
         std::mem::take(&mut self.runners.lock().unwrap())
     }
 }
@@ -449,58 +384,23 @@ impl Executor for MockExecutor {
 fn test_scheduler() {
     env_logger::init();
 
-    let config = Config {
-        http: HttpConfig {
-            bind: "".to_string(),
-            secret: "".to_string(),
-        },
-        github: GithubConfig {
-            entity: github::Entity::Repository("foo".to_owned(), "bar".to_owned()),
-            api_token: ApiToken(Default::default()),
-        },
-        slurm: SlurmConfig {
-            srun: Default::default(),
-            squeue: Default::default(),
-            srun_options: vec![],
-            srun_env: Default::default(),
-            job_name: "job".to_owned(),
-        },
-        runner: RunnerConfig {
-            platform: "none".to_owned(),
-            work_dir: Default::default(),
-            registration: RunnerRegistrationConfig {
-                name: "runner".to_owned(),
-                labels: vec!["base-label-1".to_owned(), "base-label-2".to_owned()],
-            },
-            listen_timeout_s: 0,
-        },
-        targets: HashMap::from([
-            (
-                TargetId("target-a".to_owned()),
-                TargetConfig {
-                    runner_labels: vec!["a-label-1".to_owned()],
-                    srun_options: vec![],
-                    srun_env: Default::default(),
-                },
-            ),
-            (
-                TargetId("target-b".to_owned()),
-                TargetConfig {
-                    runner_labels: vec!["b-label-1".to_owned(), "b-label-2".to_owned()],
-                    srun_options: vec![],
-                    srun_env: Default::default(),
-                },
-            ),
-        ]),
-    };
-
-    let config_file = ConfigFile {
-        config,
-        path: PathBuf::from("/path/to/config"),
-    };
-
+    let runner_labels = vec!["base-label-1".to_owned(), "base-label-2".to_owned()];
+    let targets_with_labels = vec![
+        (
+            TargetId("target-a".to_owned()),
+            vec!["a-label-1".to_owned()],
+        ),
+        (
+            TargetId("target-b".to_owned()),
+            vec!["b-label-1".to_owned(), "b-label-2".to_owned()],
+        ),
+    ];
     let executor = MockExecutor::default();
-    let scheduler = Arc::new(Scheduler::new(Box::new(executor.clone()), config_file));
+    let scheduler = Arc::new(Scheduler::new(
+        Box::new(executor.clone()),
+        runner_labels,
+        targets_with_labels,
+    ));
 
     scheduler
         .job_enqueued(

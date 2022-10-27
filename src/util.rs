@@ -259,3 +259,41 @@ pub fn decrement_or_remove<K: PartialEq + Eq + Hash>(map: &mut HashMap<K, usize>
         }
     }
 }
+
+macro_rules! literal_types {
+    ($($(#[$attrs:meta])* $vis:vis struct $id:ident(pub $ty:ty);)*) => ($(
+        #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+        #[derive(::serde::Serialize, ::serde::Deserialize)]
+        #[serde(transparent)]
+        $(#[$attrs])*
+        $vis struct $id(pub $ty);
+
+        impl ::std::ops::Deref for $id {
+            type Target = $ty;
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl ::std::convert::From<$ty> for $id {
+            fn from(v: $ty) -> Self {
+                Self(v)
+            }
+        }
+
+        impl ::std::str::FromStr for $id {
+            type Err = <$ty as ::std::str::FromStr>::Err;
+            fn from_str(s: &str) -> ::std::result::Result<Self, Self::Err> {
+                Ok($id(<$ty>::from_str(s)?))
+            }
+        }
+
+        impl ::std::fmt::Display for $id {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                write!(f, "{}", self.0)
+            }
+        }
+    )*);
+}
+
+pub(crate) use literal_types;
