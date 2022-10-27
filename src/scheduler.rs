@@ -88,15 +88,14 @@ pub struct SchedulerStateSnapshot {
     pub runners: HashMap<InternalRunnerId, RunnerInfo>,
 }
 
-trait Executor: Send + Sync {
-    fn spawn_runner(&self, target: &TargetId, scheduler: &Scheduler) -> anyhow::Result<()>;
+pub trait Executor {
+    fn spawn_runner(&self, target: &TargetId, scheduler: &Arc<Scheduler>) -> anyhow::Result<()>;
 }
 
-#[derive(Clone)]
 pub struct Scheduler {
-    executor: Arc<dyn Executor>,
-    config_file: Arc<ConfigFile>,
-    state: Arc<Mutex<SchedulerState>>,
+    executor: Box<dyn Executor + Send + Sync>,
+    config_file: ConfigFile,
+    state: Mutex<SchedulerState>,
 }
 
 #[derive(Debug, Error)]
@@ -108,20 +107,16 @@ pub enum Error {
 }
 
 impl Scheduler {
-    pub fn new(config_file: ConfigFile) -> Scheduler {
-        Self::with_executor(Arc::new(SlurmExecutor), config_file)
-    }
-
-    fn with_executor(executor: Arc<dyn Executor>, config_file: ConfigFile) -> Scheduler {
+    pub fn new(executor: Box<dyn Executor + Send + Sync>, config_file: ConfigFile) -> Self {
         Scheduler {
             executor,
-            config_file: Arc::new(config_file),
-            state: Arc::new(Mutex::new(SchedulerState {
+            config_file,
+            state: Mutex::new(SchedulerState {
                 jobs: HashMap::new(),
                 runners: HashMap::new(),
                 rids_by_name: HashMap::new(),
                 next_runner_id: InternalRunnerId(0),
-            })),
+            }),
         }
     }
 
@@ -143,7 +138,7 @@ impl Scheduler {
         })
     }
 
-    fn runner_connected(&self, runner_id: InternalRunnerId, metadata: RunnerMetadata) {
+    fn runner_connected(self: &Arc<Self>, runner_id: InternalRunnerId, metadata: RunnerMetadata) {
         let runner_name = metadata.runner_name.clone();
 
         let target = self.with_state(|state| {
@@ -168,7 +163,7 @@ impl Scheduler {
         );
     }
 
-    fn runner_disconnected(&self, runner_id: InternalRunnerId) {
+    fn runner_disconnected(self: &Arc<Self>, runner_id: InternalRunnerId) {
         // remove runner independent of job success
         let (runner_name, runner_state) = self.with_state(|state| {
             let info = (state.runners)
@@ -199,7 +194,7 @@ impl Scheduler {
     // TODO what do we actually signal with a result here? If scheduling fails, does it place the
     //  scheduler in some permanent invalid state, will we try again next time, and can we find a
     //  way to avoid endlessly re-trying a failing operation?
-    fn schedule(&self) -> anyhow::Result<()> {
+    fn schedule(self: &Arc<Self>) -> anyhow::Result<()> {
         let (mut pending_job_targets, mut unassigned_runner_targets) = self.with_state(|state| {
             let pending_job_targets: Vec<_> = (state.jobs)
                 .iter()
@@ -234,7 +229,7 @@ impl Scheduler {
     }
 
     pub fn job_enqueued<'c>(
-        &self,
+        self: &Arc<Self>,
         job_id: github::WorkflowJobId,
         name: &str,
         url: &str,
@@ -275,7 +270,7 @@ impl Scheduler {
     }
 
     pub fn job_processing(
-        &self,
+        self: &Arc<Self>,
         job_id: github::WorkflowJobId,
         runner_name: &str,
     ) -> Result<(), Error> {
@@ -354,7 +349,7 @@ impl Scheduler {
         }
     }
 
-    pub fn job_completed(&self, job_id: github::WorkflowJobId) {
+    pub fn job_completed(self: &Arc<Self>, job_id: github::WorkflowJobId) {
         // It's acceptable for job_id to be unknown in case it's from a foreign job
         if self
             .with_state(|state| state.jobs.remove(&job_id))
@@ -372,13 +367,14 @@ impl Scheduler {
     }
 }
 
-struct SlurmExecutor;
+#[derive(Default)]
+pub struct SlurmExecutor;
 
 impl SlurmExecutor {
     async fn supervise_runner_job(
         runner_id: InternalRunnerId,
         slurm_runner: slurm::RunnerJob,
-        scheduler: &Scheduler,
+        scheduler: &Arc<Scheduler>,
     ) -> anyhow::Result<()> {
         let (metadata, slurm_runner) = slurm_runner
             .attach()
@@ -401,7 +397,7 @@ impl SlurmExecutor {
 }
 
 impl Executor for SlurmExecutor {
-    fn spawn_runner(&self, target: &TargetId, scheduler: &Scheduler) -> anyhow::Result<()> {
+    fn spawn_runner(&self, target: &TargetId, scheduler: &Arc<Scheduler>) -> anyhow::Result<()> {
         let runner_id = scheduler.create_runner(target.clone());
 
         let slurm_runner = slurm::RunnerJob::spawn(&scheduler.config_file, &target)
@@ -428,18 +424,13 @@ use {
 };
 
 #[cfg(test)]
+#[derive(Default, Clone)]
 struct MockExecutor {
-    runners: Mutex<Vec<(InternalRunnerId, TargetId)>>,
+    runners: Arc<Mutex<Vec<(InternalRunnerId, TargetId)>>>,
 }
 
 #[cfg(test)]
 impl MockExecutor {
-    fn new() -> Self {
-        MockExecutor {
-            runners: Mutex::new(Vec::new()),
-        }
-    }
-
     fn take_runners(&self) -> Vec<(InternalRunnerId, TargetId)> {
         std::mem::take(&mut self.runners.lock().unwrap())
     }
@@ -447,7 +438,7 @@ impl MockExecutor {
 
 #[cfg(test)]
 impl Executor for MockExecutor {
-    fn spawn_runner(&self, target: &TargetId, scheduler: &Scheduler) -> anyhow::Result<()> {
+    fn spawn_runner(&self, target: &TargetId, scheduler: &Arc<Scheduler>) -> anyhow::Result<()> {
         let rid = scheduler.create_runner(target.clone());
         self.runners.lock().unwrap().push((rid, target.clone()));
         Ok(())
@@ -508,8 +499,8 @@ fn test_scheduler() {
         path: PathBuf::from("/path/to/config"),
     };
 
-    let executor = Arc::new(MockExecutor::new());
-    let scheduler = Scheduler::with_executor(executor.clone(), config_file);
+    let executor = MockExecutor::default();
+    let scheduler = Arc::new(Scheduler::new(Box::new(executor.clone()), config_file));
 
     scheduler
         .job_enqueued(

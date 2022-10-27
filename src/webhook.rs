@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 use std::fmt::{Debug, Display, Formatter};
+use std::sync::Arc;
 
 use actix_web::error::ParseError;
 use actix_web::http::header::{ContentType, Header, HeaderName, HeaderValue, TryIntoHeaderValue};
@@ -12,7 +13,7 @@ use serde::Deserialize;
 use crate::config::{ConfigFile, GithubConfig, HttpConfig};
 use crate::github;
 use crate::github::{WorkflowJob, WorkflowStatus};
-use crate::scheduler::{self, Scheduler};
+use crate::scheduler::{self, Scheduler, SlurmExecutor};
 
 type StaticContent = (&'static str, StatusCode);
 type StaticResult = actix_web::Result<StaticContent>;
@@ -63,7 +64,10 @@ struct WorkflowJobPayload {
     workflow_job: WorkflowJob,
 }
 
-async fn workflow_job_event(scheduler: &Scheduler, payload: &WorkflowJobPayload) -> StaticResult {
+async fn workflow_job_event(
+    scheduler: &Arc<Scheduler>,
+    payload: &WorkflowJobPayload,
+) -> StaticResult {
     let WorkflowJobPayload {
         action,
         workflow_job:
@@ -204,7 +208,7 @@ async fn index(
         .body(html)
 }
 
-async fn schedule_all_pending_jobs(github_config: &GithubConfig, scheduler: &Scheduler) {
+async fn schedule_all_pending_jobs(github_config: &GithubConfig, scheduler: &Arc<Scheduler>) {
     // We don't intend to fail the entire daemon if the initial querying or scheduling errors out,
     // so we log errors and return ()
     github::list_all_pending_workflow_jobs(&github_config.entity, &github_config.api_token)
@@ -224,7 +228,7 @@ async fn schedule_all_pending_jobs(github_config: &GithubConfig, scheduler: &Sch
 
 #[actix_web::main]
 pub async fn main(config_file: ConfigFile) -> anyhow::Result<()> {
-    let scheduler = Scheduler::new(config_file.clone());
+    let scheduler = Arc::new(Scheduler::new(Box::new(SlurmExecutor), config_file.clone()));
 
     let mut handlebars = Handlebars::new();
     handlebars
@@ -232,7 +236,7 @@ pub async fn main(config_file: ConfigFile) -> anyhow::Result<()> {
         .unwrap();
 
     let server = {
-        let rc_scheduler = web::Data::new(scheduler.clone());
+        let rc_scheduler = web::Data::from(scheduler.clone());
         let rc_handlebars = web::Data::new(handlebars);
         let rc_http_config = web::Data::new(config_file.config.http.clone());
         HttpServer::new(move || {
