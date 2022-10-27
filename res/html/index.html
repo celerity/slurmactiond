@@ -1,32 +1,127 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+     <style>
+        :root {
+            font-size: 16px;
+        }
+        body {
+            font-family: 'Fira Sans', 'Source Sans Pro', sans-serif;
+            padding: 10px;
+        }
+        h1 {
+            font-size: 1.78rem;
+            margin: 0.5rem 0 1.4rem 0;
+        }
+        .col h2 {
+            margin: 0.8rem 0;
+            font-size: 1.2rem;
+            text-align: center;
+        }
+        a {
+            color: unset;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        .runner-state a, .job-state a {
+            text-decoration: underline;
+        }
+        .container {
+            display: flex;
+            gap: 40px;
+        }
+        .col {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            flex: 0 1 350px;
+        }
+        .node {
+            line-height: 1.4em;
+            font-size: .9rem;
+            display: block;
+            position: relative;
+            padding: 0.6rem 1rem 0.5rem 2.8rem;
+            border: 1px solid rgb(185, 185, 185);
+            border-radius: 5px;
+        }
+        .node::before {
+            content: '';
+            display: block;
+            position: absolute;
+            width: 0.8rem;
+            height: 0.8rem;
+            background: rgb(212, 212, 38);
+            border-radius: 50%;
+            left: 1rem;
+            top: calc(50% - 0.4rem);
+        }
+        .node.job-in-progress:before, .node.runner-running:before {
+            background: rgb(32, 155, 23);
+        }
+        .node:target {
+            background: rgb(244, 251, 255);
+            border-color: rgb(125, 173, 199);
+        }
+        .node .head {
+            display: block;
+            font-size: 1rem;
+        }
+        .node .head .name {
+            font-weight: 500;
+        }
+        .internal-id {
+            font-size: .8rem;
+            color: #888;
+        }
+        .foreign-runner-name {
+            font-style: italic;
+        }
+        .placeholder {
+            text-align: center;
+            color: #888;
+        }
+    </style>
     <title>slurmactiond</title>
-    <style>body { font-family: sans-serif; }</style>
 </head>
 <body>
-    <h1>slurmactiond</h1>
-    <h2>Tracked Workflow Jobs</h2>
-    <ul>
-    {{#each jobs}}
-        <li><a href="{{url}}">{{@key}}</a> ({{name}}):
-        {{~#if state.InProgress}} In Progress on R{{state.InProgress}}
-        {{~else}}
-        {{~#if state.InProgressOnForeignRunner}} In Progress on <b>foreign runner</b> <i>{{state.InProgressOnForeignRunner}}</i>
-        {{~else}} Pending for one of [{{#each state.Pending}}{{this}}{{#if (not @last)}}, {{/if}}{{/each}}]
-        {{~/if}}
-        {{~/if}}</li>
-    {{/each}}
-    </ul>
-    <h2>Active Runners</h2>
-    <ul>
-    {{#each runners}}
-        <li>R{{@key}} ({{this.target}}):
-        {{~#if metadata}} {{metadata.runner_name}} (SLURM job {{metadata.slurm_job}}),{{/if}}
-        {{~#if state.Running}} Running job {{state.Running}}
-        {{~else}} {{state}}
-        {{~/if}}</li>
-    {{/each}}
-    </ul>
+<h1><a href="">slurmactiond</a></h1>
+<div class="container">
+    <div class="col col-jobs">
+        <h2>Tracked Workflow Jobs</h2>
+        {{#each jobs}}
+        <div class="node job{{#if state.InProgress}} job-in-progress{{/if}}" id="job-{{@key}}">
+            <span class="head">
+                <a href="{{url}}" class="name job-name">{{name}}</a>
+                <span class="internal-id" title="GitHub workflow job ID">(#{{@key}})</span>
+            </span>
+            {{#if state.InProgress}}<span class="job-state">in progress on <a href="#runner-{{state.InProgress}}">runner {{state.InProgress}}</a></span>
+            {{else}}
+            {{#if state.InProgressOnForeignRunner}}<span class="job-state"> in progress on foreign runner <span class="foreign-runner-name">{{state.InProgressOnForeignRunner}}</span></span>
+            {{else}}<span class="job-state">pending for one of [{{#each state.Pending}}{{this}}{{#if (not @last)}}, {{/if}}{{/each}}]</span>
+            {{/if}}
+            {{/if}}
+        </div>
+        {{/each}}
+        {{#unless jobs}}<div class="placeholder">No active jobs.</div>{{~/unless}}
+    </div>
+    <div class="col col-runners">
+        <h2>Active Runners</h2>
+        {{#each runners}}
+        <div class="node runner{{#if state.Running}} runner-running{{/if}}" id="runner-{{@key}}">
+            <span class="head">
+                <span class="name runner-name">{{#if metadata}}{{metadata.runner_name}}{{else}}Unnamed{{/if}}</span>
+                <span class="internal-id">(<span title="slurmactiond-internal runner ID">#{{@key}}</span>, {{this.target}})</span>
+            </span>
+            {{~#if state.Running}}<span class="runner-state">running <a href="#job-{{state.Running}}">workflow job {{state.Running}}</a></span>
+            {{else}}<span class="runner-state">{{state}}</span>
+            {{/if}}
+        </div>
+        {{/each}}
+        {{#unless runners}}<div class="placeholder">No active runners.</div>{{~/unless}}
+    </div>
+</div>
 </body>
 </html>
