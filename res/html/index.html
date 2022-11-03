@@ -91,36 +91,42 @@
 <div class="container">
     <div class="col col-jobs">
         <h2>Tracked Workflow Jobs</h2>
-        {{#each jobs}}
-        <div class="node job{{#if 1.state.InProgress includeZero=true}} job-in-progress{{/if}}" id="job-{{0}}">
+        {%- for job_kv in jobs %}
+        {%- set jid = job_kv[0] %}
+        {%- set jinfo = job_kv[1] %}
+        <div class="node job{% if jinfo.state.InProgress is defined %} job-in-progress{% endif %}" id="job-{{ jid }}">
             <span class="head">
-                <a href="{{1.url}}" class="name job-name">{{1.name}}</a>
-                <span class="internal-id" title="GitHub workflow job ID">(#{{0}})</span>
+                <a href="{{ jinfo.url }}" class="name job-name">{{ jinfo.name }}</a>
+                <span class="internal-id" title="GitHub workflow job ID">(#{{ jid }})</span>
             </span>
-            {{#if 1.state.InProgress includeZero=true}}<span class="job-state">in progress on <a href="#runner-{{1.state.InProgress}}">runner {{1.state.InProgress}}</a></span>
-            {{else}}
-            {{#if 1.state.InProgressOnForeignRunner includeZero=true}}<span class="job-state"> in progress on foreign runner <span class="foreign-runner-name">{{1.state.InProgressOnForeignRunner}}</span></span>
-            {{else}}<span class="job-state">pending for one of [{{#each 1.state.Pending}}{{this}}{{#if (not @last)}}, {{/if}}{{/each}}]</span>
-            {{/if}}
-            {{/if}}
+            {% if jinfo.state.InProgress is defined %}<span class="job-state">in progress on <a href="#runner-{{ jinfo.state.InProgress }}">runner {{ jinfo.state.InProgress }}</a></span>
+            {% elif jinfo.state.InProgressOnForeignRunner is defined %}<span class="job-state"> in progress on foreign runner <span class="foreign-runner-name">{{ jinfo.state.InProgressOnForeignRunner }}</span></span>
+            {% else %}<span class="job-state">pending for one of [{% for label in jinfo.state.Pending %}{{ label }}{% if not loop.last %}, {% endif %}{% endfor %}]</span>
+            {%- endif %}
         </div>
-        {{/each}}
-        {{#unless jobs}}<div class="placeholder">No active jobs.</div>{{~/unless}}
+        {%- endfor %}
+        {%- if not jobs %}
+        <div class="placeholder">No active jobs.</div>
+        {%- endif %}
     </div>
     <div class="col col-runners">
         <h2>Active Runners</h2>
-        {{#each runners}}
-        <div class="node runner{{#if 1.state.Running includeZero=true}} runner-running{{/if}}" id="runner-{{0}}">
+        {%- for runner_kv in runners %}
+        {%- set rid = runner_kv[0] %}
+        {%- set rinfo = runner_kv[1] %}
+        <div class="node runner{% if rinfo.state.Running is defined %} runner-running{% endif %}" id="runner-{{ rid }}">
             <span class="head">
-                <span class="name runner-name">{{#if 1.metadata}}{{1.metadata.runner_name}}{{else}}Unnamed{{/if}}</span>
-                <span class="internal-id">(<span title="slurmactiond-internal runner ID">#{{0}}</span>, {{1.target}}{{#if 1.metadata}} on {{1.metadata.host_name}}{{/if}})</span>
+                <span class="name runner-name">{% if rinfo.metadata %}{{ rinfo.metadata.runner_name }}{% else %}Unnamed{% endif %}</span>
+                <span class="internal-id">(<span title="slurmactiond-internal runner ID">#{{ rid }}</span>, {{ rinfo.target }}{% if rinfo.metadata %} on {{ rinfo.metadata.host_name }}{% endif %})</span>
             </span>
-            {{~#if 1.state.Running includeZero=true}}<span class="runner-state">running <a href="#job-{{1.state.Running}}">workflow job {{1.state.Running}}</a></span>
-            {{else}}<span class="runner-state">{{1.state}}</span>
-            {{/if}}
+            {% if rinfo.state.Running is defined %}<span class="runner-state">running <a href="#job-{{ rinfo.state.Running }}">workflow job {{ rinfo.state.Running }}</a></span>
+            {% else %}<span class="runner-state">{{ rinfo.state }}</span>
+            {%- endif %}
         </div>
-        {{/each}}
-        {{#unless runners}}<div class="placeholder">No active runners.</div>{{~/unless}}
+        {%- endfor %}
+        {%- if not runners %}
+        <div class="placeholder">No active runners.</div>
+        {%- endif %}
     </div>
 </div>
 </body>

@@ -27,7 +27,7 @@ clap = { version = "3", features = ["derive"] } # argument parsing
 thiserror = "1.0" # derive(Error) for inspectable errors
 anyhow = "1.0" # type-erased errors
 nix = "0.25" # gethostname, getuid, kill, isatty (for detecting interactive vs service)
-handlebars = "4" # HTML template rendering
+tera = { version = "1", default-features = false } # HTML template rendering
 
 [dev-dependencies]
 tempfile = "3" # for testing file_io

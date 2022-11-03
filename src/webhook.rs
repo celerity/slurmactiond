@@ -6,9 +6,9 @@ use actix_web::error::ParseError;
 use actix_web::http::header::{ContentType, Header, HeaderName, HeaderValue, TryIntoHeaderValue};
 use actix_web::http::StatusCode;
 use actix_web::{web, App, HttpMessage, HttpResponse, HttpServer, ResponseError};
-use handlebars::Handlebars;
 use log::{debug, error};
 use serde::Deserialize;
+use tera::Tera;
 
 use crate::config::{ConfigFile, GithubConfig, HttpConfig};
 use crate::github;
@@ -197,12 +197,11 @@ async fn webhook_event(
 }
 
 #[actix_web::get("/")]
-async fn index(
-    scheduler: web::Data<Scheduler>,
-    handlebars: web::Data<Handlebars<'static>>,
-) -> HttpResponse {
-    let html = handlebars
-        .render("index", &scheduler.snapshot_state())
+async fn index(scheduler: web::Data<Scheduler>, tera: web::Data<Tera>) -> HttpResponse {
+    let cxt = tera::Context::from_serialize(&scheduler.snapshot_state())
+        .expect("Error serializing state");
+    let html = tera
+        .render("index", &cxt)
         .expect("Error rendering index template");
     HttpResponse::build(StatusCode::OK)
         .content_type(ContentType::html())
@@ -240,19 +239,18 @@ pub async fn main(config_file: ConfigFile) -> anyhow::Result<()> {
         targets_with_labels,
     ));
 
-    let mut handlebars = Handlebars::new();
-    handlebars
-        .register_template_string("index", include_str!("../res/html/index.html"))
+    let mut tera = Tera::default();
+    tera.add_raw_template("index", include_str!("../res/html/index.html"))
         .unwrap();
 
     let server = {
         let rc_scheduler = web::Data::from(scheduler.clone());
-        let rc_handlebars = web::Data::new(handlebars);
+        let rc_tera = web::Data::new(tera);
         let rc_http_config = web::Data::new(config_file.config.http.clone());
         HttpServer::new(move || {
             App::new()
                 .app_data(rc_scheduler.clone())
-                .app_data(rc_handlebars.clone())
+                .app_data(rc_tera.clone())
                 .app_data(rc_http_config.clone())
                 .service(index)
                 .service(webhook_event)
@@ -301,9 +299,8 @@ fn test_render_index() {
     };
     use crate::slurm;
 
-    let mut handlebars = Handlebars::new();
-    handlebars
-        .register_template_string("index", include_str!("../res/html/index.html"))
+    let mut tera = Tera::default();
+    tera.add_raw_template("index", include_str!("../res/html/index.html"))
         .unwrap();
     let state = SchedulerStateSnapshot {
         jobs: vec![
@@ -312,7 +309,10 @@ fn test_render_index() {
                 WorkflowJobInfo {
                     name: "Job A".to_owned(),
                     url: "https://github.com/octo-org/example-workflow/runs/1".to_owned(),
-                    state: WorkflowJobState::Pending(vec![TargetId("label".to_owned())]),
+                    state: WorkflowJobState::Pending(vec![
+                        TargetId("label-1".to_owned()),
+                        TargetId("label-2".to_owned()),
+                    ]),
                 },
             ),
             (
@@ -364,5 +364,6 @@ fn test_render_index() {
             ),
         ],
     };
-    println!("{}", handlebars.render("index", &state).unwrap());
+    let cxt = tera::Context::from_serialize(&state).unwrap();
+    println!("{}", tera.render("index", &cxt).unwrap());
 }
