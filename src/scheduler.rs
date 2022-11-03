@@ -62,10 +62,18 @@ pub trait Executor {
     fn spawn_runner(&self, target: &TargetId, scheduler: &Arc<Scheduler>) -> anyhow::Result<()>;
 }
 
+type TargetPriority = i64;
+
+pub struct Target {
+    pub id: TargetId,
+    pub runner_labels: Vec<Label>,
+    pub priority: TargetPriority,
+}
+
 pub struct Scheduler {
     executor: Box<dyn Executor + Send + Sync>,
     runner_labels: Vec<Label>,
-    targets_with_labels: Vec<(TargetId, Vec<Label>)>,
+    targets: Vec<Target>,
     state: Mutex<SchedulerState>,
 }
 
@@ -81,12 +89,12 @@ impl Scheduler {
     pub fn new(
         executor: Box<dyn Executor + Send + Sync>,
         runner_labels: Vec<Label>,
-        targets_with_labels: Vec<(TargetId, Vec<Label>)>,
+        targets: Vec<Target>,
     ) -> Self {
         Scheduler {
             executor,
             runner_labels,
-            targets_with_labels,
+            targets,
             state: Mutex::new(SchedulerState {
                 jobs: HashMap::new(),
                 runners: HashMap::new(),
@@ -207,17 +215,16 @@ impl Scheduler {
         let unmatched_labels: Vec<_> = (job_labels.iter())
             .filter(|jl| !(*jl == "self-hosted" || self.runner_labels.contains(*jl)))
             .collect();
-        let mut matching_target_distances: Vec<_> = self
-            .targets_with_labels
-            .iter()
-            .filter(|(_, tls)| unmatched_labels.iter().all(|jl| tls.contains(jl)))
-            .map(|(t, tls)| (t, tls.len()))
+        let mut matching_targets: Vec<_> = (self.targets.iter())
+            .filter(|t| {
+                unmatched_labels
+                    .iter()
+                    .all(|jl| t.runner_labels.contains(jl))
+            })
             .collect();
-        matching_target_distances.sort_by_key(|(_, len)| *len);
-        matching_target_distances
-            .into_iter()
-            .map(|(id, _)| id.clone())
-            .collect()
+        // sort first by priority ascending, then by remaining runner label count descending
+        matching_targets.sort_by_key(|t| (t.priority, usize::MAX - t.runner_labels.len()));
+        (matching_targets.iter()).map(|t| t.id.clone()).collect()
     }
 
     pub fn job_enqueued<'c>(
@@ -385,21 +392,23 @@ fn test_scheduler() {
     env_logger::init();
 
     let runner_labels = vec!["base-label-1".to_owned(), "base-label-2".to_owned()];
-    let targets_with_labels = vec![
-        (
-            TargetId("target-a".to_owned()),
-            vec!["a-label-1".to_owned()],
-        ),
-        (
-            TargetId("target-b".to_owned()),
-            vec!["b-label-1".to_owned(), "b-label-2".to_owned()],
-        ),
+    let targets = vec![
+        Target {
+            id: TargetId("target-a".to_owned()),
+            runner_labels: vec!["a-label-1".to_owned()],
+            priority: 0,
+        },
+        Target {
+            id: TargetId("target-b".to_owned()),
+            runner_labels: vec!["b-label-1".to_owned(), "b-label-2".to_owned()],
+            priority: 0,
+        },
     ];
     let executor = MockExecutor::default();
     let scheduler = Arc::new(Scheduler::new(
         Box::new(executor.clone()),
         runner_labels,
-        targets_with_labels,
+        targets,
     ));
 
     scheduler

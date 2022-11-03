@@ -261,14 +261,18 @@ async fn schedule_all_pending_jobs(github_config: &GithubConfig, scheduler: &Arc
 #[actix_web::main]
 pub async fn main(config_file: ConfigFile) -> anyhow::Result<()> {
     let runner_labels = config_file.config.runner.registration.labels.clone();
-    let targets_with_labels = (config_file.config.targets.iter())
-        .map(|(t, c)| (t.clone(), c.runner_labels.clone()))
+    let targets = (config_file.config.targets.iter())
+        .map(|(id, c)| scheduler::Target {
+            id: id.clone(),
+            runner_labels: c.runner_labels.clone(),
+            priority: c.priority,
+        })
         .collect();
 
     let scheduler = Arc::new(Scheduler::new(
         Box::new(SlurmExecutor::new(config_file.clone())),
         runner_labels,
-        targets_with_labels,
+        targets,
     ));
 
     let mut tera = Tera::default();

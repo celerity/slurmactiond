@@ -35,6 +35,8 @@ impl SlurmConfig {
 pub struct TargetConfig {
     pub runner_labels: Vec<Label>,
     #[serde(default)]
+    pub priority: i64,
+    #[serde(default)]
     pub srun_options: Vec<String>,
     #[serde(default)]
     pub srun_env: HashMap<String, String>,

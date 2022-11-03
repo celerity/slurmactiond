@@ -25,8 +25,10 @@ labels = ["slurm", "dc-03"]
 [targets.gpu]
 runner_labels = ["gpu", "db-app"]
 srun_options = ["-p", "gpu"]
+priority = 1 # lower value is higher priority in case multiple targets apply to one job
 
 [targets.intel]
 runner_labels = ["gpu", "db-app", "intel"]
 srun_options = ["-p", "intel"]
+priority = 2
 # srun_env = { RUNNER_OPTION = "VALUE" }
