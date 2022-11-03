@@ -184,20 +184,21 @@ pub async fn run(
 
     let work_dir = WorkDir::lock(&cfg.runner.work_dir.join(&*target), job, &active_jobs)
         .with_context(|| "Cannot lock private working directory")?;
+    let host_name = gethostname()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "(unknown hostname)".to_string());
+
+    if log::max_level() >= log::Level::Info {
+        info!("Running on {host_name} in `{}`", work_dir.path.display());
+    }
 
     let metadata = ipc::RunnerMetadata {
         slurm_job: job,
         runner_name: runner_name.clone(),
+        host_name,
         concurrent_id: work_dir.concurrent_id,
     };
     ipc::send(metadata).with_context(|| "Error serializing metadata to stdout")?;
-
-    if log::max_level() >= log::Level::Info {
-        let host_name = gethostname()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "(unknown hostname)".to_string());
-        info!("Running on {host_name} in `{}`", work_dir.path.display());
-    }
 
     let base_labels = cfg.runner.registration.labels.iter().map(AsRef::as_ref);
     let target_labels = cfg.targets[&target].runner_labels.iter().map(AsRef::as_ref);

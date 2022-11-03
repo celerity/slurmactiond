@@ -443,6 +443,7 @@ fn test_scheduler() {
             RunnerMetadata {
                 slurm_job: slurm::JobId(0),
                 runner_name: "runner-a-0".to_string(),
+                host_name: "host-a".to_string(),
                 concurrent_id: 0,
             },
         );
@@ -472,6 +473,7 @@ fn test_scheduler() {
             RunnerMetadata {
                 slurm_job: slurm::JobId(0),
                 runner_name: "runner-a-1".to_string(),
+                host_name: "host-a".to_string(),
                 concurrent_id: 0,
             },
         );
@@ -510,6 +512,7 @@ fn test_scheduler() {
             RunnerMetadata {
                 slurm_job: slurm::JobId(0),
                 runner_name: "runner-b-0".to_string(),
+                host_name: "host-b".to_string(),
                 concurrent_id: 0,
             },
         );
@@ -548,6 +551,7 @@ fn test_scheduler() {
             RunnerMetadata {
                 slurm_job: slurm::JobId(0),
                 runner_name: "runner-b-0".to_string(),
+                host_name: "host-b".to_string(),
                 concurrent_id: 0,
             },
         );
@@ -573,6 +577,7 @@ fn test_scheduler() {
             RunnerMetadata {
                 slurm_job: slurm::JobId(0),
                 runner_name: "runner-b-2".to_string(),
+                host_name: "host-b".to_string(),
                 concurrent_id: 0,
             },
         );

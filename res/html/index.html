@@ -113,7 +113,7 @@
         <div class="node runner{{#if 1.state.Running includeZero=true}} runner-running{{/if}}" id="runner-{{0}}">
             <span class="head">
                 <span class="name runner-name">{{#if 1.metadata}}{{1.metadata.runner_name}}{{else}}Unnamed{{/if}}</span>
-                <span class="internal-id">(<span title="slurmactiond-internal runner ID">#{{0}}</span>, {{1.target}})</span>
+                <span class="internal-id">(<span title="slurmactiond-internal runner ID">#{{0}}</span>, {{1.target}}{{#if 1.metadata}} on {{1.metadata.host_name}}{{/if}})</span>
             </span>
             {{~#if 1.state.Running includeZero=true}}<span class="runner-state">running <a href="#job-{{1.state.Running}}">workflow job {{1.state.Running}}</a></span>
             {{else}}<span class="runner-state">{{1.state}}</span>

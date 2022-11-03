@@ -340,6 +340,7 @@ fn test_render_index() {
                     metadata: Some(RunnerMetadata {
                         runner_name: "runner-1".to_owned(),
                         slurm_job: slurm::JobId(999),
+                        host_name: "host".to_string(),
                         concurrent_id: 1,
                     }),
                     state: RunnerState::Running(WorkflowJobId(789)),
