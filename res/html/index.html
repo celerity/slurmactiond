@@ -92,15 +92,15 @@
     <div class="col col-jobs">
         <h2>Tracked Workflow Jobs</h2>
         {{#each jobs}}
-        <div class="node job{{#if state.InProgress}} job-in-progress{{/if}}" id="job-{{@key}}">
+        <div class="node job{{#if 1.state.InProgress includeZero=true}} job-in-progress{{/if}}" id="job-{{0}}">
             <span class="head">
-                <a href="{{url}}" class="name job-name">{{name}}</a>
-                <span class="internal-id" title="GitHub workflow job ID">(#{{@key}})</span>
+                <a href="{{1.url}}" class="name job-name">{{1.name}}</a>
+                <span class="internal-id" title="GitHub workflow job ID">(#{{0}})</span>
             </span>
-            {{#if state.InProgress}}<span class="job-state">in progress on <a href="#runner-{{state.InProgress}}">runner {{state.InProgress}}</a></span>
+            {{#if 1.state.InProgress includeZero=true}}<span class="job-state">in progress on <a href="#runner-{{1.state.InProgress}}">runner {{1.state.InProgress}}</a></span>
             {{else}}
-            {{#if state.InProgressOnForeignRunner}}<span class="job-state"> in progress on foreign runner <span class="foreign-runner-name">{{state.InProgressOnForeignRunner}}</span></span>
-            {{else}}<span class="job-state">pending for one of [{{#each state.Pending}}{{this}}{{#if (not @last)}}, {{/if}}{{/each}}]</span>
+            {{#if 1.state.InProgressOnForeignRunner includeZero=true}}<span class="job-state"> in progress on foreign runner <span class="foreign-runner-name">{{1.state.InProgressOnForeignRunner}}</span></span>
+            {{else}}<span class="job-state">pending for one of [{{#each 1.state.Pending}}{{this}}{{#if (not @last)}}, {{/if}}{{/each}}]</span>
             {{/if}}
             {{/if}}
         </div>
@@ -110,13 +110,13 @@
     <div class="col col-runners">
         <h2>Active Runners</h2>
         {{#each runners}}
-        <div class="node runner{{#if state.Running}} runner-running{{/if}}" id="runner-{{@key}}">
+        <div class="node runner{{#if 1.state.Running includeZero=true}} runner-running{{/if}}" id="runner-{{0}}">
             <span class="head">
-                <span class="name runner-name">{{#if metadata}}{{metadata.runner_name}}{{else}}Unnamed{{/if}}</span>
-                <span class="internal-id">(<span title="slurmactiond-internal runner ID">#{{@key}}</span>, {{this.target}})</span>
+                <span class="name runner-name">{{#if 1.metadata}}{{1.metadata.runner_name}}{{else}}Unnamed{{/if}}</span>
+                <span class="internal-id">(<span title="slurmactiond-internal runner ID">#{{0}}</span>, {{1.target}})</span>
             </span>
-            {{~#if state.Running}}<span class="runner-state">running <a href="#job-{{state.Running}}">workflow job {{state.Running}}</a></span>
-            {{else}}<span class="runner-state">{{state}}</span>
+            {{~#if 1.state.Running includeZero=true}}<span class="runner-state">running <a href="#job-{{1.state.Running}}">workflow job {{1.state.Running}}</a></span>
+            {{else}}<span class="runner-state">{{1.state}}</span>
             {{/if}}
         </div>
         {{/each}}

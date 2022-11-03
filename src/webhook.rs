@@ -328,13 +328,13 @@ fn test_render_index() {
                 WorkflowJobInfo {
                     name: "Job C".to_owned(),
                     url: "https://github.com/octo-org/example-workflow/runs/3".to_owned(),
-                    state: WorkflowJobState::InProgress(scheduler::RunnerId(1)),
+                    state: WorkflowJobState::InProgress(scheduler::RunnerId(0)),
                 },
             ),
         ],
         runners: vec![
             (
-                scheduler::RunnerId(1),
+                scheduler::RunnerId(0),
                 RunnerInfo {
                     target: TargetId("target-a".to_string()),
                     metadata: Some(RunnerMetadata {
