@@ -337,6 +337,14 @@ fn test_render_index() {
     let state = SchedulerStateSnapshot {
         jobs: HashMap::from([
             (
+                WorkflowJobId(42),
+                WorkflowJobInfo {
+                    name: "Job X".to_owned(),
+                    url: "https://github.com/octo-org/example-workflow/runs/0".to_owned(),
+                    state: WorkflowJobState::Pending(vec![TargetId("label-1".to_owned())]),
+                },
+            ),
+            (
                 WorkflowJobId(123),
                 WorkflowJobInfo {
                     name: "Job A".to_owned(),

@@ -36,7 +36,7 @@
             display: flex;
             flex-direction: column;
             gap: 15px;
-            flex: 0 1 700px;
+            flex: 0 1 600px;
         }
         .node {
             line-height: 1.4em;
@@ -108,7 +108,11 @@
             {%- elif jinfo.state.InProgressOnForeignRunner is defined %}
             <span class="job-state"> in progress on foreign runner <span class="foreign-runner-name">{{ jinfo.state.InProgressOnForeignRunner }}</span></span>
             {%- else %}
+            {%- if jinfo.state.Pending | length == 1 %}
+            <span class="job-state">pending for {{ jinfo.state.Pending[0] }}</span>
+            {%- else %}
             <span class="job-state">pending for one of [{% for label in jinfo.state.Pending %}{{ label }}{% if not loop.last %}, {% endif %}{% endfor %}]</span>
+            {%- endif %}
             {%- endif %}
         </div>
         {%- endfor %}
@@ -132,8 +136,10 @@
             {%- else %}
             <span class="runner-state">running workflow job #{{ jid }}</span>
             {%- endif %}
+            {%- elif rinfo.state == "Waiting" %}
+            <span class="runner-state">waiting for job assignment</span>
             {%- else %}
-            <span class="runner-state">{{ rinfo.state }}</span>
+            <span class="runner-state">queued in SLURM</span>
             {%- endif %}
         </div>
         {%- endfor %}
