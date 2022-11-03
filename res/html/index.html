@@ -91,17 +91,24 @@
 <div class="container">
     <div class="col col-jobs">
         <h2>Tracked Workflow Jobs</h2>
-        {%- for job_kv in jobs %}
-        {%- set jid = job_kv[0] %}
-        {%- set jinfo = job_kv[1] %}
+        {%- for jid in jobs_order %}
+        {%- set jinfo = jobs[jid] %}
         <div class="node job{% if jinfo.state.InProgress is defined %} job-in-progress{% endif %}" id="job-{{ jid }}">
             <span class="head">
                 <a href="{{ jinfo.url }}" class="name job-name">{{ jinfo.name }}</a>
                 <span class="internal-id" title="GitHub workflow job ID">(#{{ jid }})</span>
             </span>
-            {% if jinfo.state.InProgress is defined %}<span class="job-state">in progress on <a href="#runner-{{ jinfo.state.InProgress }}">runner {{ jinfo.state.InProgress }}</a></span>
-            {% elif jinfo.state.InProgressOnForeignRunner is defined %}<span class="job-state"> in progress on foreign runner <span class="foreign-runner-name">{{ jinfo.state.InProgressOnForeignRunner }}</span></span>
-            {% else %}<span class="job-state">pending for one of [{% for label in jinfo.state.Pending %}{{ label }}{% if not loop.last %}, {% endif %}{% endfor %}]</span>
+            {%- if jinfo.state.InProgress is defined %}
+            {%- set rid = jinfo.state.InProgress %}
+            {%- if rid | as_str in runners and runners[rid].metadata %}
+            <span class="job-state">in progress on <a href="#runner-{{ rid }}">{{ runners[rid].metadata.runner_name }}</a> <span class="internal-id">(#{{ rid }})</span></span>
+            {%- else %}
+            <span class="job-state">in progress on runner #{{ rid }}</span>
+            {%- endif %}
+            {%- elif jinfo.state.InProgressOnForeignRunner is defined %}
+            <span class="job-state"> in progress on foreign runner <span class="foreign-runner-name">{{ jinfo.state.InProgressOnForeignRunner }}</span></span>
+            {%- else %}
+            <span class="job-state">pending for one of [{% for label in jinfo.state.Pending %}{{ label }}{% if not loop.last %}, {% endif %}{% endfor %}]</span>
             {%- endif %}
         </div>
         {%- endfor %}
@@ -111,16 +118,22 @@
     </div>
     <div class="col col-runners">
         <h2>Active Runners</h2>
-        {%- for runner_kv in runners %}
-        {%- set rid = runner_kv[0] %}
-        {%- set rinfo = runner_kv[1] %}
+        {%- for rid in runners_order %}
+        {%- set rinfo = runners[rid] %}
         <div class="node runner{% if rinfo.state.Running is defined %} runner-running{% endif %}" id="runner-{{ rid }}">
             <span class="head">
                 <span class="name runner-name">{% if rinfo.metadata %}{{ rinfo.metadata.runner_name }}{% else %}Unnamed{% endif %}</span>
                 <span class="internal-id">(<span title="slurmactiond-internal runner ID">#{{ rid }}</span>, {{ rinfo.target }}{% if rinfo.metadata %} on {{ rinfo.metadata.host_name }}{% endif %})</span>
             </span>
-            {% if rinfo.state.Running is defined %}<span class="runner-state">running <a href="#job-{{ rinfo.state.Running }}">workflow job {{ rinfo.state.Running }}</a></span>
-            {% else %}<span class="runner-state">{{ rinfo.state }}</span>
+            {%- if rinfo.state.Running is defined %}
+            {%- set jid = rinfo.state.Running %}
+            {%- if jid | as_str in jobs %}
+            <span class="runner-state">running <a href="#job-{{ jid }}">{{ jobs[jid].name }}</a> <span class="internal-id">(#{{ jid }})</span></span>
+            {%- else %}
+            <span class="runner-state">running workflow job #{{ jid }}</span>
+            {%- endif %}
+            {%- else %}
+            <span class="runner-state">{{ rinfo.state }}</span>
             {%- endif %}
         </div>
         {%- endfor %}

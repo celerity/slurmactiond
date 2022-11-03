@@ -54,8 +54,8 @@ struct SchedulerState {
 
 #[derive(Clone, Serialize)]
 pub struct SchedulerStateSnapshot {
-    pub jobs: Vec<(github::WorkflowJobId, WorkflowJobInfo)>,
-    pub runners: Vec<(RunnerId, RunnerInfo)>,
+    pub jobs: HashMap<github::WorkflowJobId, WorkflowJobInfo>,
+    pub runners: HashMap<RunnerId, RunnerInfo>,
 }
 
 pub trait Executor {
@@ -348,25 +348,10 @@ impl Scheduler {
     }
 
     pub fn snapshot_state(&self) -> SchedulerStateSnapshot {
-        let mut snapshot = self.with_state(|state| SchedulerStateSnapshot {
-            jobs: (state.jobs.iter())
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-            runners: (state.runners.iter())
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-        });
-        (snapshot.jobs).sort_by_key(|(_, job)| match job.state {
-            WorkflowJobState::InProgress(_) => 0,
-            WorkflowJobState::InProgressOnForeignRunner(_) => 1,
-            WorkflowJobState::Pending(_) => 2,
-        });
-        (snapshot.runners).sort_by_key(|(_, runner)| match runner.state {
-            RunnerState::Running(_) => 0,
-            RunnerState::Waiting => 1,
-            RunnerState::Queued => 2,
-        });
-        snapshot
+        self.with_state(|state| SchedulerStateSnapshot {
+            jobs: state.jobs.clone(),
+            runners: state.runners.clone(),
+        })
     }
 }
 

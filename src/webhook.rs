@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
@@ -7,13 +8,13 @@ use actix_web::http::header::{ContentType, Header, HeaderName, HeaderValue, TryI
 use actix_web::http::StatusCode;
 use actix_web::{web, App, HttpMessage, HttpResponse, HttpServer, ResponseError};
 use log::{debug, error};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tera::Tera;
 
 use crate::config::{ConfigFile, GithubConfig, HttpConfig};
 use crate::github;
 use crate::github::{WorkflowJob, WorkflowStatus};
-use crate::scheduler::{self, Scheduler};
+use crate::scheduler::{self, Scheduler, SchedulerStateSnapshot};
 use crate::slurm::SlurmExecutor;
 
 type StaticContent = (&'static str, StatusCode);
@@ -196,10 +197,41 @@ async fn webhook_event(
     }
 }
 
+#[derive(Serialize)]
+struct Index {
+    pub jobs_order: Vec<github::WorkflowJobId>,
+    pub runners_order: Vec<scheduler::RunnerId>,
+    pub jobs: HashMap<github::WorkflowJobId, scheduler::WorkflowJobInfo>,
+    pub runners: HashMap<scheduler::RunnerId, scheduler::RunnerInfo>,
+}
+
+impl From<SchedulerStateSnapshot> for Index {
+    fn from(SchedulerStateSnapshot { jobs, runners }: SchedulerStateSnapshot) -> Self {
+        let mut jobs_order: Vec<_> = jobs.keys().map(|k| (*k).clone()).collect();
+        jobs_order.sort_by_key(|id| match jobs[id].state {
+            scheduler::WorkflowJobState::InProgress(_) => 0,
+            scheduler::WorkflowJobState::InProgressOnForeignRunner(_) => 1,
+            scheduler::WorkflowJobState::Pending(_) => 2,
+        });
+        let mut runners_order: Vec<_> = runners.keys().map(|k| (*k).clone()).collect();
+        runners_order.sort_by_key(|rid| match runners[rid].state {
+            scheduler::RunnerState::Running(_) => 0,
+            scheduler::RunnerState::Waiting => 1,
+            scheduler::RunnerState::Queued => 2,
+        });
+        Index {
+            jobs_order,
+            runners_order,
+            jobs,
+            runners,
+        }
+    }
+}
+
 #[actix_web::get("/")]
 async fn index(scheduler: web::Data<Scheduler>, tera: web::Data<Tera>) -> HttpResponse {
-    let cxt = tera::Context::from_serialize(&scheduler.snapshot_state())
-        .expect("Error serializing state");
+    let index = Index::from(scheduler.snapshot_state());
+    let cxt = tera::Context::from_serialize(&index).expect("Error serializing state");
     let html = tera
         .render("index", &cxt)
         .expect("Error rendering index template");
@@ -303,7 +335,7 @@ fn test_render_index() {
     tera.add_raw_template("index", include_str!("../res/html/index.html"))
         .unwrap();
     let state = SchedulerStateSnapshot {
-        jobs: vec![
+        jobs: HashMap::from([
             (
                 WorkflowJobId(123),
                 WorkflowJobInfo {
@@ -331,8 +363,16 @@ fn test_render_index() {
                     state: WorkflowJobState::InProgress(scheduler::RunnerId(0)),
                 },
             ),
-        ],
-        runners: vec![
+            (
+                WorkflowJobId(987),
+                WorkflowJobInfo {
+                    name: "Job on removed runner".to_owned(),
+                    url: "https://github.com/octo-org/example-workflow/runs/4".to_owned(),
+                    state: WorkflowJobState::InProgress(scheduler::RunnerId(9)),
+                },
+            ),
+        ]),
+        runners: HashMap::from([
             (
                 scheduler::RunnerId(0),
                 RunnerInfo {
@@ -362,8 +402,21 @@ fn test_render_index() {
                     state: RunnerState::Waiting,
                 },
             ),
-        ],
+            (
+                scheduler::RunnerId(4),
+                RunnerInfo {
+                    target: TargetId("target-a".to_string()),
+                    metadata: Some(RunnerMetadata {
+                        runner_name: "runner-with-removed-job".to_owned(),
+                        slurm_job: slurm::JobId(1000),
+                        host_name: "host".to_string(),
+                        concurrent_id: 1,
+                    }),
+                    state: RunnerState::Running(WorkflowJobId(2222)),
+                },
+            ),
+        ]),
     };
-    let cxt = tera::Context::from_serialize(&state).unwrap();
+    let cxt = tera::Context::from_serialize(&Index::from(state)).unwrap();
     println!("{}", tera.render("index", &cxt).unwrap());
 }
