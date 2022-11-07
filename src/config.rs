@@ -1,7 +1,7 @@
 use anyhow::Context;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::github;
 use crate::scheduler::{Label, TargetId};
@@ -101,10 +101,7 @@ pub struct ConfigFile {
 }
 
 impl ConfigFile {
-    pub fn read(path: &Path) -> anyhow::Result<ConfigFile> {
-        let path = path
-            .canonicalize()
-            .with_context(|| format!("Cannot resolve path {}", path.display()))?;
+    pub fn read(path: PathBuf) -> anyhow::Result<ConfigFile> {
         let bytes = std::fs::read(&path)
             .with_context(|| format!("Error reading from {}", path.display()))?;
         let config = toml::from_slice(&bytes)
