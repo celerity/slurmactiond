@@ -3,8 +3,14 @@
 set -eu -o pipefail
 
 usage() {
-    echo "Usage: $0 [--root ROOT] [--prefix PREFIX] [--user] [--dry-run] [--help]" >&2
-    exit 1
+    echo "Usage: $0 [--root ROOT] [--prefix PREFIX] [--user] [--dry-run] [--config] [--help]"
+    echo
+    echo "    --root ROOT      target filesystem root (default /)"
+    echo "    --prefix PREFIX  installation path relative to root (default /usr/local)"
+    echo "    --user           install into \$HOME/.local and \$HOME/.config instead"
+    echo "    --config         install (potentially overwrite) config files"
+    echo "    --dry-run        print installation paths, but do not actually install"
+    echo "    --help           show this help"
 }
 
 SOURCE_ROOT="$(readlink -f ""$(dirname $0)/..)"
@@ -13,15 +19,17 @@ OPT_ROOT=
 OPT_PREFIX=/usr/local
 OPT_USER=
 OPT_DRY_RUN=
+OPT_CONFIG=
 while [ $# -gt 0 ]; do
     case "$1" in
         --root) OPT_ROOT="$2"; shift 2;;
         --prefix) OPT_PREFIX="$2"; shift 2;;
         --user) OPT_USER=1; shift;;
+        --config) OPT_CONFIG=1; shift;;
         --dry-run) OPT_DRY_RUN=1; shift;;
-        --help) (usage) || exit 0;;
+        --help) usage; exit 0;;
         --) shift;;
-        *) echo "Unexpected argument \"$1\"" >&2; usage;;
+        *) echo "Unexpected argument \"$1\"" >&2; (usage) >&2; exit 1;;
     esac
 done
 
@@ -57,8 +65,11 @@ maybe cargo build --release
 
 maybe install -m 0755 -d "$DIR_BIN" "$DIR_CONFIG" "$DIR_RES" "$DIR_SYSTEMD"
 maybe install -m 0755 target/release/slurmactiond "$DIR_BIN/slurmactiond"
-maybe install -m 0644 slurmactiond.example.service "$DIR_SYSTEMD/slurmactiond.service"
-maybe install -m 0644 slurmactiond.example.toml "$DIR_CONFIG/slurmactiond.toml"
+
+if [ -n "$OPT_CONFIG" ]; then
+    maybe install -m 0644 slurmactiond.example.service "$DIR_SYSTEMD/slurmactiond.service"
+    maybe install -m 0644 slurmactiond.example.toml "$DIR_CONFIG/slurmactiond.toml"
+fi
 
 IFS=$'\n' FILES_RES=($(find res -type f -printf '%P\n'))
 for FILE in "${FILES_RES[@]}"; do
