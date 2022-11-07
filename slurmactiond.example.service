@@ -5,7 +5,6 @@ After=network.target
 [Service]
 User=cirunner
 Group=cirunner
-ExecStart=sh -lc /home/cirunner/slurmactiond
-WorkingDirectory=/home/cirunner
+ExecStart=sh -lc /usr/local/bin/slurmactiond
 Type=simple
 Restart=always
