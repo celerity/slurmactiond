@@ -69,11 +69,10 @@ server {
 
 ## Installing and Configuring slurmactiond
 
-1. Build the slurmactiond release binary and copy it from `target/release/slurmactiond` to a shared
-   filesystem that is accessible by all SLURM nodes.
-2. Copy `slurmactiond.example.toml` from this repository to `slurmactiond.toml` into the
-   directory where the binary now resides.
-3. Complete the configuration:
+1. Install the service and config file skeletons by running ```dist/install.sh --config```.
+   Re-installations after an update should **not** use the `--config` flag, as it will overwrite
+   any changes made to config files.
+2. Complete the configuration in `/etc/slurmactiond.toml`.
    - Set `http.secret` to the Secret we used when configuring the Webhook.
    - Set `github.entity` to the organization name or `user/repo` specification where runners
      should be registered.
@@ -84,8 +83,8 @@ server {
      a Workflow job matches all of the `runner_labels`, an ephemeral Actions Runner will be
      scheduled through SLRUM via an `srun` command that receives all the `srun_options` specified
      here.
-4. (optional) Register slurmactiond as a systemd service
-   - Copy `slurmactiond.example.service` to `/etc/systemd/system/slurmactiond.service` and
-     (optionally) adjust the usernames and installation paths within the `.service` file.
+3. (optional) Register slurmactiond as a systemd service
+   - (optional) Adjust the usernames and installation paths within the `.service` file.
    - Start the service via `systemctl start slurmactiond`.
+   - (optional) Auto-start the service via `systemctl start slurmactiond`.
    - (optional) Inspect the logs via `journalctl -u slurmactiond`.
