@@ -33,14 +33,19 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+NEEDS_ROOT=
 if [ -n "$OPT_USER" ]; then
     DIR_BIN="$HOME/.local/bin"
     DIR_RES="$HOME/.local/share/slurmactiond"
     DIR_CONFIG="$HOME/.config"
     DIR_SYSTEMD="$HOME/.local/share/systemd/user"
 else
-    DIR_BIN="$OPT_ROOT$OPT_PREFIX/bin"
-    DIR_RES="$OPT_ROOT$OPT_PREFIX/share/slurmactiond"
+    ABS_PREFIX="$OPT_ROOT$OPT_PREFIX"
+    if ! [ -w "$OPT_ROOT" ] || ([ -e "$ABS_PREFIX" ] && ! [ -w "$ABS_PREFIX" ]); then
+        NEEDS_ROOT=1
+    fi
+    DIR_BIN="$ABS_PREFIX/bin"
+    DIR_RES="$ABS_PREFIX/share/slurmactiond"
     DIR_CONFIG="$OPT_ROOT/etc"
     DIR_SYSTEMD="$OPT_ROOT/lib/systemd"
 fi
@@ -61,17 +66,25 @@ maybe() {
     fi
 }
 
+maybe_sudo() {
+    if [ -n "$NEEDS_ROOT" ]; then
+        maybe sudo "$@"
+    else
+        maybe "$@"
+    fi
+}
+
 maybe cargo build --release
 
-maybe install -m 0755 -d "$DIR_BIN" "$DIR_CONFIG" "$DIR_RES" "$DIR_SYSTEMD"
-maybe install -m 0755 target/release/slurmactiond "$DIR_BIN/slurmactiond"
+maybe_sudo install -m 0755 -d "$DIR_BIN" "$DIR_CONFIG" "$DIR_RES" "$DIR_SYSTEMD"
+maybe_sudo install -m 0755 target/release/slurmactiond "$DIR_BIN/slurmactiond"
 
 if [ -n "$OPT_CONFIG" ]; then
-    maybe install -m 0644 slurmactiond.example.service "$DIR_SYSTEMD/slurmactiond.service"
-    maybe install -m 0644 slurmactiond.example.toml "$DIR_CONFIG/slurmactiond.toml"
+    maybe_sudo install -m 0644 slurmactiond.example.service "$DIR_SYSTEMD/slurmactiond.service"
+    maybe_sudo install -m 0644 slurmactiond.example.toml "$DIR_CONFIG/slurmactiond.toml"
 fi
 
 IFS=$'\n' FILES_RES=($(find res -type f -printf '%P\n'))
 for FILE in "${FILES_RES[@]}"; do
-    maybe install -m 0644 -D "res/$FILE" "$DIR_RES/$FILE"
+    maybe_sudo install -m 0644 -D "res/$FILE" "$DIR_RES/$FILE"
 done
