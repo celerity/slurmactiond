@@ -3,6 +3,7 @@ use std::convert::Infallible;
 use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
 
+use actix_web::dev::ServiceResponse;
 use actix_web::error::ParseError;
 use actix_web::http::header::{ContentType, Header, HeaderName, HeaderValue, TryIntoHeaderValue};
 use actix_web::http::StatusCode;
@@ -12,10 +13,10 @@ use serde::{Deserialize, Serialize};
 use tera::Tera;
 
 use crate::config::{ConfigFile, GithubConfig, HttpConfig};
-use crate::github;
 use crate::github::{WorkflowJob, WorkflowStatus};
 use crate::scheduler::{self, Scheduler, SchedulerStateSnapshot};
 use crate::slurm::SlurmExecutor;
+use crate::{github, paths};
 
 type StaticContent = (&'static str, StatusCode);
 type StaticResult = actix_web::Result<StaticContent>;
@@ -275,8 +276,12 @@ pub async fn main(config_file: ConfigFile) -> anyhow::Result<()> {
         targets,
     ));
 
+    let resource_path = paths::find_resources_path()?;
+    let html_path = paths::join!(&resource_path, "html");
+    let static_path = paths::join!(&resource_path, "static");
+
     let mut tera = Tera::default();
-    tera.add_raw_template("index", include_str!("../res/html/index.html"))
+    tera.add_template_file(paths::join!(&html_path, "index.html"), Some("index"))
         .unwrap();
 
     let server = {
@@ -284,12 +289,22 @@ pub async fn main(config_file: ConfigFile) -> anyhow::Result<()> {
         let rc_tera = web::Data::new(tera);
         let rc_http_config = web::Data::new(config_file.config.http.clone());
         HttpServer::new(move || {
+            let static_files = actix_files::Files::new("/static", &static_path)
+                .prefer_utf8(true)
+                .show_files_listing()
+                .files_listing_renderer(|_, req| {
+                    Ok(ServiceResponse::new(
+                        req.clone(),
+                        HttpResponse::NotFound().finish(),
+                    ))
+                });
             App::new()
                 .app_data(rc_scheduler.clone())
                 .app_data(rc_tera.clone())
                 .app_data(rc_http_config.clone())
                 .service(index)
                 .service(webhook_event)
+                .service(static_files.clone())
         })
         .bind(&config_file.config.http.bind)?
         .run()

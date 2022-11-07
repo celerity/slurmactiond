@@ -11,6 +11,7 @@ edition = "2021"
 
 [dependencies]
 actix-web = { version = "4", features = ["macros"], default-features = false } # HTTP / web framework
+actix-files = "0.6" # for serving static files
 awc = { version = "3", features = ["openssl", "compress-gzip"], default-features = false } # HTTP client implementation used by actix-web
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

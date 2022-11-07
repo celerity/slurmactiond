@@ -27,18 +27,24 @@ done
 
 if [ -n "$OPT_USER" ]; then
     DIR_BIN="$HOME/.local/bin"
+    DIR_RES="$HOME/.local/share/slurmactiond"
     DIR_CONFIG="$HOME/.config"
     DIR_SYSTEMD="$HOME/.local/share/systemd/user"
 else
     DIR_BIN="$OPT_ROOT$OPT_PREFIX/bin"
+    DIR_RES="$OPT_ROOT$OPT_PREFIX/share/slurmactiond"
     DIR_CONFIG="$OPT_ROOT/etc"
     DIR_SYSTEMD="$OPT_ROOT/lib/systemd"
 fi
 
 echo "binary path:       $DIR_BIN"
 echo "config path:       $DIR_CONFIG"
+echo "resource path      $DIR_RES"
 echo "systemd unit path: $DIR_SYSTEMD"
 echo
+
+echo cd $SOURCE_ROOT
+cd $SOURCE_ROOT
 
 maybe() {
     echo "$@"
@@ -47,9 +53,14 @@ maybe() {
     fi
 }
 
-maybe cd $SOURCE_ROOT
 maybe cargo build --release
-maybe install -m 0755 -d "$DIR_BIN" "$DIR_CONFIG" "$DIR_SYSTEMD"
+
+maybe install -m 0755 -d "$DIR_BIN" "$DIR_CONFIG" "$DIR_RES" "$DIR_SYSTEMD"
 maybe install -m 0755 target/release/slurmactiond "$DIR_BIN/slurmactiond"
 maybe install -m 0644 slurmactiond.example.service "$DIR_SYSTEMD/slurmactiond.service"
 maybe install -m 0644 slurmactiond.example.toml "$DIR_CONFIG/slurmactiond.toml"
+
+IFS=$'\n' FILES_RES=($(find res -type f -printf '%P\n'))
+for FILE in "${FILES_RES[@]}"; do
+    maybe install -m 0644 -D "res/$FILE" "$DIR_RES/$FILE"
+done
