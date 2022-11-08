@@ -132,12 +132,17 @@ async fn run_instance(work_path: &Path, runner_cfg: &RunnerConfig) -> anyhow::Re
         match tokio::time::timeout(listen_timeout, run.output_stream.next_line()).await {
             Ok(Ok(Some((stream, line)))) => {
                 log_child_output(stream, "run.sh", &line);
-                if stream == ChildStream::Stdout && line.contains(": Running job:") {
-                    return run
-                        .log_output("run.sh")
-                        .await
-                        .and_successful()
-                        .with_context(|| "Runner finished with non-zero exit code");
+                if stream == ChildStream::Stdout {
+                    if line.contains(": Listening for Jobs") {
+                        ipc::send(ipc::Envelope::RunnerListening)
+                            .with_context(|| "Error serializing message to stdout")?;
+                    } else if line.contains(": Running job:") {
+                        return run
+                            .log_output("run.sh")
+                            .await
+                            .and_successful()
+                            .with_context(|| "Runner finished with non-zero exit code");
+                    }
                 }
             }
             Ok(Ok(None)) => {
@@ -198,7 +203,8 @@ pub async fn run(
         host_name,
         concurrent_id: work_dir.concurrent_id,
     };
-    ipc::send(metadata).with_context(|| "Error serializing metadata to stdout")?;
+    ipc::send(ipc::Envelope::RunnerMetadata(metadata))
+        .with_context(|| "Error serializing metadata to stdout")?;
 
     let base_labels = cfg.runner.registration.labels.iter().map(AsRef::as_ref);
     let target_labels = cfg.targets[&target].runner_labels.iter().map(AsRef::as_ref);

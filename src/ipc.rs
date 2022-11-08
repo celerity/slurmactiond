@@ -31,7 +31,8 @@ impl LogEntry {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Envelope {
-    Metadata(RunnerMetadata),
+    RunnerMetadata(RunnerMetadata),
+    RunnerListening,
     Log(LogEntry),
 }
 
@@ -75,8 +76,7 @@ pub fn parse(json: &str) -> anyhow::Result<Envelope> {
     Ok(envelope)
 }
 
-pub fn send(metadata: RunnerMetadata) -> anyhow::Result<()> {
-    let envelope = Envelope::Metadata(metadata);
+pub fn send(envelope: Envelope) -> anyhow::Result<()> {
     let mut stdout = std::io::stdout().lock();
     serde_json::to_writer(&mut stdout, &envelope)?;
     stdout.write(b"\n")?;

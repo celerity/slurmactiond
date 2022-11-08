@@ -31,48 +31,28 @@ pub fn current_job() -> anyhow::Result<JobId> {
     Ok(JobId(id_int))
 }
 
-pub struct RunnerJobState {
-    child: Child,
-    output: ChildStreamMux,
+#[derive(Copy, Clone)]
+enum RunnerJobState {
+    Queued,
+    Starting,
+    Listening,
+    Exited,
 }
 
-impl RunnerJobState {
-    async fn next_message(&mut self) -> anyhow::Result<Option<ipc::Envelope>> {
-        while let Some((stream, line)) = self
-            .output
-            .next_line()
-            .await
-            .with_context(|| "Error reading output of srun")?
-        {
-            match stream {
-                ChildStream::Stdout => {
-                    return ipc::parse(&line)
-                        .map(Some)
-                        .with_context(|| "Error parsing IPC output from child process")
-                }
-                ChildStream::Stderr => warn!("{}", line),
-            }
-        }
-        Ok(None)
-    }
-
-    async fn wait(&mut self) -> anyhow::Result<ExitStatus> {
-        return (self.child.wait().await)
-            .with_context(|| "Error waiting for srun execution to complete");
-    }
+pub enum RunnerJobEvent {
+    Starting(RunnerMetadata),
+    Listening,
+    Exited(ExitStatus),
 }
 
 pub struct RunnerJob {
     state: RunnerJobState,
-}
-
-#[must_use]
-pub struct AttachedRunnerJob {
-    state: RunnerJobState,
+    child: Child,
+    output: ChildStreamMux,
 }
 
 impl RunnerJob {
-    pub fn spawn(config_file: &ConfigFile, target: &TargetId) -> anyhow::Result<RunnerJob> {
+    pub fn spawn(config_file: &ConfigFile, target: &TargetId) -> anyhow::Result<Self> {
         let cfg = &config_file.config;
 
         let name = format!("{}-{}", &cfg.slurm.job_name, &target);
@@ -101,6 +81,8 @@ impl RunnerJob {
             debug!("Starting {}", cl.join(" "));
         }
 
+        let state = RunnerJobState::Queued;
+
         let mut child = Command::new(&cfg.slurm.srun)
             .args(args)
             .envs(cfg.slurm.srun_env.iter())
@@ -115,40 +97,58 @@ impl RunnerJob {
         let output = ChildStreamMux::new(child.stdout.take(), child.stderr.take());
 
         Ok(RunnerJob {
-            state: RunnerJobState { child, output },
+            state,
+            child,
+            output,
         })
     }
 
-    pub async fn attach(mut self) -> anyhow::Result<(RunnerMetadata, AttachedRunnerJob)> {
-        loop {
-            match self.state.next_message().await? {
-                Some(ipc::Envelope::Log(entry)) => entry.log(),
-                Some(ipc::Envelope::Metadata(metadata)) => {
-                    return Ok((metadata, AttachedRunnerJob { state: self.state }))
+    async fn wait(&mut self) -> anyhow::Result<ExitStatus> {
+        return (self.child.wait().await)
+            .with_context(|| "Error waiting for srun execution to complete");
+    }
+
+    async fn next_envelope(&mut self) -> anyhow::Result<Option<ipc::Envelope>> {
+        while let Some((stream, line)) = self
+            .output
+            .next_line()
+            .await
+            .with_context(|| "Error reading output of srun")?
+        {
+            match stream {
+                ChildStream::Stdout => {
+                    return ipc::parse(&line)
+                        .map(Some)
+                        .with_context(|| "Error parsing IPC output from child process")
                 }
-                None => {
-                    if let Err(e) = self.state.wait().await {
-                        error!("{e:#}");
-                    }
-                    anyhow::bail!("Child process closed stdout before sending metadata")
-                }
+                ChildStream::Stderr => warn!("{}", line),
             }
         }
+        Ok(None)
     }
-}
 
-impl AttachedRunnerJob {
-    pub async fn wait(mut self) -> anyhow::Result<ExitStatus> {
+    pub async fn next_event(&mut self) -> anyhow::Result<RunnerJobEvent> {
         loop {
-            match self.state.next_message().await? {
-                Some(ipc::Envelope::Log(entry)) => entry.log(),
-                Some(ipc::Envelope::Metadata(_)) => {
-                    if let Err(e) = self.state.child.wait().await {
-                        error!("Waiting on child process after it closed stdout early: {e:#}");
-                    }
-                    anyhow::bail!("Child process closed stdout before sending metadata")
+            match (self.next_envelope().await?, self.state) {
+                (Some(ipc::Envelope::Log(entry)), _) => entry.log(),
+                (Some(ipc::Envelope::RunnerMetadata(metadata)), RunnerJobState::Queued) => {
+                    self.state = RunnerJobState::Starting;
+                    return Ok(RunnerJobEvent::Starting(metadata));
                 }
-                None => return self.state.wait().await,
+                (Some(ipc::Envelope::RunnerListening), RunnerJobState::Starting) => {
+                    self.state = RunnerJobState::Listening;
+                    return Ok(RunnerJobEvent::Listening);
+                }
+                (None, RunnerJobState::Starting | RunnerJobState::Listening) => {
+                    self.state = RunnerJobState::Exited;
+                    return Ok(RunnerJobEvent::Exited(self.wait().await?));
+                }
+                _ => {
+                    if let Err(e) = self.wait().await {
+                        error!("{e:#}");
+                    }
+                    anyhow::bail!("Unexpected envelope or end of stream");
+                }
             }
         }
     }
@@ -196,26 +196,28 @@ impl SlurmExecutor {
 
     async fn supervise_runner_job(
         runner_id: scheduler::RunnerId,
-        slurm_runner: RunnerJob,
+        mut slurm_runner: RunnerJob,
         scheduler: &Arc<Scheduler>,
     ) -> anyhow::Result<()> {
-        let (metadata, slurm_runner) = slurm_runner
-            .attach()
-            .await
-            .with_context(|| "Attaching to SLURM job")?;
-
-        scheduler.runner_connected(runner_id, metadata);
-
-        let result = slurm_runner
-            .wait()
-            .await
-            .with_context(|| "Waiting for SLURM job");
-
-        scheduler.runner_disconnected(runner_id);
-
-        info!("SLURM job exited with status {}", result?);
-
-        Ok(())
+        loop {
+            let event = slurm_runner
+                .next_event()
+                .await
+                .with_context(|| "Waiting for event from SLURM job")?;
+            match event {
+                RunnerJobEvent::Starting(metadata) => {
+                    scheduler.runner_connected(runner_id, metadata)?;
+                }
+                RunnerJobEvent::Listening => {
+                    scheduler.runner_listening(runner_id);
+                }
+                RunnerJobEvent::Exited(exit_status) => {
+                    scheduler.runner_disconnected(runner_id);
+                    info!("SLURM job exited with status {}", exit_status);
+                    break Ok(());
+                }
+            }
+        }
     }
 }
 

@@ -34,7 +34,8 @@ pub struct WorkflowJobInfo {
 #[derive(Clone, Serialize)]
 pub enum RunnerState {
     Queued,
-    Waiting,
+    Starting,
+    Listening,
     Running(github::WorkflowJobId),
 }
 
@@ -122,7 +123,11 @@ impl Scheduler {
         })
     }
 
-    pub fn runner_connected(self: &Arc<Self>, runner_id: RunnerId, metadata: RunnerMetadata) {
+    pub fn runner_connected(
+        self: &Arc<Self>,
+        runner_id: RunnerId,
+        metadata: RunnerMetadata,
+    ) -> Result<(), Error> {
         let runner_name = metadata.runner_name.clone();
 
         let target = self.with_state(|state| {
@@ -132,16 +137,33 @@ impl Scheduler {
                 .expect("Unknown internal runner id");
             assert!(matches!(info.state, RunnerState::Queued));
 
-            info.metadata = Some(metadata);
-            info.state = RunnerState::Waiting;
-
             let existing_by_name = state.rids_by_name.insert(runner_name.clone(), runner_id);
-            assert!(existing_by_name.is_none());
+            if existing_by_name.is_some() {
+                return Err(Error::InvalidState(format!(
+                    "Runner with name {runner_name} already exists"
+                )));
+            }
 
-            info.target.clone()
-        });
+            info.metadata = Some(metadata);
+            info.state = RunnerState::Starting;
+
+            Ok(info.target.clone())
+        })?;
 
         info!("Runner {runner_id} ({runner_name}) connected for target {target}");
+        Ok(())
+    }
+
+    pub fn runner_listening(self: &Arc<Self>, runner_id: RunnerId) {
+        self.with_state(|state| {
+            let info = state
+                .runners
+                .get_mut(&runner_id)
+                .expect("Unknown internal runner id");
+            if let RunnerState::Starting = info.state {
+                info.state = RunnerState::Listening;
+            }
+        });
     }
 
     pub fn runner_disconnected(self: &Arc<Self>, runner_id: RunnerId) {
@@ -158,13 +180,11 @@ impl Scheduler {
         });
 
         match runner_state {
-            RunnerState::Queued | RunnerState::Waiting => {
+            RunnerState::Queued | RunnerState::Starting | RunnerState::Listening => {
                 warn!(
-                    "Runner {runner_id} ({runner_name}) disconnected {detail}",
-                    detail = concat!(
-                        "without having picked up a job. This might be due to a ",
-                        "timeout or a foreign runner picking up our jobs."
-                    )
+                    "Runner {runner_id} ({runner_name}) disconnected {} {}",
+                    "without having picked up a job. This might be due to a",
+                    "timeout or a foreign runner picking up our jobs."
                 );
                 self.schedule().unwrap_or_else(|e| error!("{e:#}"))
             }
@@ -187,7 +207,9 @@ impl Scheduler {
 
             let mut unassigned_runner_targets = HashMap::new();
             for (_, info) in &state.runners {
-                if let RunnerState::Queued | RunnerState::Waiting = info.state {
+                if let RunnerState::Queued | RunnerState::Starting | RunnerState::Listening =
+                    info.state
+                {
                     util::increment_or_insert(&mut unassigned_runner_targets, &info.target);
                 }
             }
@@ -274,33 +296,33 @@ impl Scheduler {
             RunnerStoleForeignJob(RunnerId),
             ForeignRunnerStolePendingJob,
             JobNotPending,
-            RunnerNotWaiting(RunnerId),
+            RunnerNotConnected(RunnerId),
             ForeignRunnerPickedUpForeignJob,
         }
 
         let transition = self.with_state(|state| {
+            use {RunnerState as Rs, WorkflowJobState as Wjs};
             let runner_and_state = (state.rids_by_name.get(runner_name))
                 .map(|rid| (rid, &mut state.runners.get_mut(rid).unwrap().state));
             let workflow_job_state = state.jobs.get_mut(&job_id).map(|info| &mut info.state);
             match (runner_and_state, workflow_job_state) {
                 (
-                    Some((runner_id, runner_state @ RunnerState::Waiting)),
-                    Some(job_state @ WorkflowJobState::Pending(_)),
+                    Some((runner_id, runner_state @ (Rs::Starting | Rs::Listening))),
+                    Some(job_state @ Wjs::Pending(_)),
                 ) => {
                     *runner_state = RunnerState::Running(job_id);
-                    *job_state = WorkflowJobState::InProgress(*runner_id);
+                    *job_state = Wjs::InProgress(*runner_id);
                     Transition::RunnerPickedUpPendingJob(*runner_id)
                 }
-                (Some((runner_id, runner_state @ RunnerState::Waiting)), None) => {
-                    *runner_state = RunnerState::Running(job_id);
+                (Some((runner_id, runner_state @ (Rs::Starting | Rs::Listening))), None) => {
+                    *runner_state = Rs::Running(job_id);
                     Transition::RunnerStoleForeignJob(*runner_id)
                 }
-                (None, Some(job_state @ WorkflowJobState::Pending(_))) => {
-                    *job_state =
-                        WorkflowJobState::InProgressOnForeignRunner(runner_name.to_owned());
+                (None, Some(job_state @ Wjs::Pending(_))) => {
+                    *job_state = Wjs::InProgressOnForeignRunner(runner_name.to_owned());
                     Transition::ForeignRunnerStolePendingJob
                 }
-                (Some((runner_id, _)), _) => Transition::RunnerNotWaiting(*runner_id),
+                (Some((runner_id, _)), _) => Transition::RunnerNotConnected(*runner_id),
                 (_, Some(_)) => Transition::JobNotPending,
                 (None, None) => Transition::ForeignRunnerPickedUpForeignJob,
             }
@@ -338,8 +360,8 @@ impl Scheduler {
             Transition::JobNotPending => {
                 Err(Error::InvalidState(format!("Job {job_id} not pending")))
             }
-            Transition::RunnerNotWaiting(runner_id) => Err(Error::InvalidState(format!(
-                "Runner {runner_id} ({runner_name}) is not waiting for a job"
+            Transition::RunnerNotConnected(runner_id) => Err(Error::InvalidState(format!(
+                "Runner {runner_id} ({runner_name}) is not connected"
             ))),
         }
     }
@@ -432,15 +454,19 @@ fn test_scheduler() {
         assert_eq!(runners[0].1 .0, "target-a".to_owned());
         let runner_id = runners[0].0;
 
-        scheduler.runner_connected(
-            runner_id,
-            RunnerMetadata {
-                slurm_job: slurm::JobId(0),
-                runner_name: "runner-a-0".to_string(),
-                host_name: "host-a".to_string(),
-                concurrent_id: 0,
-            },
-        );
+        scheduler
+            .runner_connected(
+                runner_id,
+                RunnerMetadata {
+                    slurm_job: slurm::JobId(0),
+                    runner_name: "runner-a-0".to_string(),
+                    host_name: "host-a".to_string(),
+                    concurrent_id: 0,
+                },
+            )
+            .unwrap();
+
+        scheduler.runner_listening(runner_id);
 
         // our runner picks up a foreign job, causing a reschedule
         scheduler
@@ -462,15 +488,19 @@ fn test_scheduler() {
         assert_eq!(runners[0].1 .0, "target-a".to_owned());
         let runner_id = runners[0].0;
 
-        scheduler.runner_connected(
-            runner_id,
-            RunnerMetadata {
-                slurm_job: slurm::JobId(0),
-                runner_name: "runner-a-1".to_string(),
-                host_name: "host-a".to_string(),
-                concurrent_id: 0,
-            },
-        );
+        scheduler
+            .runner_connected(
+                runner_id,
+                RunnerMetadata {
+                    slurm_job: slurm::JobId(0),
+                    runner_name: "runner-a-1".to_string(),
+                    host_name: "host-a".to_string(),
+                    concurrent_id: 0,
+                },
+            )
+            .unwrap();
+
+        scheduler.runner_listening(runner_id);
 
         // the re-scheduled runner now picks up our job
         scheduler
@@ -501,15 +531,19 @@ fn test_scheduler() {
         assert_eq!(runners[0].1 .0, "target-b".to_owned());
         let runner_id = runners[0].0;
 
-        scheduler.runner_connected(
-            runner_id,
-            RunnerMetadata {
-                slurm_job: slurm::JobId(0),
-                runner_name: "runner-b-0".to_string(),
-                host_name: "host-b".to_string(),
-                concurrent_id: 0,
-            },
-        );
+        scheduler
+            .runner_connected(
+                runner_id,
+                RunnerMetadata {
+                    slurm_job: slurm::JobId(0),
+                    runner_name: "runner-b-0".to_string(),
+                    host_name: "host-b".to_string(),
+                    concurrent_id: 0,
+                },
+            )
+            .unwrap();
+
+        scheduler.runner_listening(runner_id);
 
         // a foreign runner picks up our job
         scheduler
@@ -540,15 +574,17 @@ fn test_scheduler() {
         assert_eq!(runners[0].1 .0, "target-b".to_owned());
         let runner_id = runners[0].0;
 
-        scheduler.runner_connected(
-            runner_id,
-            RunnerMetadata {
-                slurm_job: slurm::JobId(0),
-                runner_name: "runner-b-0".to_string(),
-                host_name: "host-b".to_string(),
-                concurrent_id: 0,
-            },
-        );
+        scheduler
+            .runner_connected(
+                runner_id,
+                RunnerMetadata {
+                    slurm_job: slurm::JobId(0),
+                    runner_name: "runner-b-0".to_string(),
+                    host_name: "host-b".to_string(),
+                    concurrent_id: 0,
+                },
+            )
+            .unwrap();
 
         // spurious runner timeout - requires a reschedule
         scheduler.runner_disconnected(runner_id);
@@ -566,15 +602,19 @@ fn test_scheduler() {
         assert_eq!(runners[0].1 .0, "target-b".to_owned());
         let runner_id = runners[0].0;
 
-        scheduler.runner_connected(
-            runner_id,
-            RunnerMetadata {
-                slurm_job: slurm::JobId(0),
-                runner_name: "runner-b-2".to_string(),
-                host_name: "host-b".to_string(),
-                concurrent_id: 0,
-            },
-        );
+        scheduler
+            .runner_connected(
+                runner_id,
+                RunnerMetadata {
+                    slurm_job: slurm::JobId(0),
+                    runner_name: "runner-b-2".to_string(),
+                    host_name: "host-b".to_string(),
+                    concurrent_id: 0,
+                },
+            )
+            .unwrap();
+
+        scheduler.runner_listening(runner_id);
 
         // the re-scheduled runner now picks up our job
         scheduler

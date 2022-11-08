@@ -44,7 +44,7 @@
         {%- set rinfo = runners[rid] %}
         <div class="node runner{% if rinfo.state.Running is defined %} runner-running{% endif %}" id="runner-{{ rid }}">
             <span class="head">
-                <span class="name runner-name">{% if rinfo.metadata %}{{ rinfo.metadata.runner_name }}{% else %}Unnamed{% endif %}</span>
+                <span class="name runner-name">{% if rinfo.metadata %}{{ rinfo.metadata.runner_name }}{% else %}unnamed {{ rinfo.target }}{% endif %}</span>
                 <span class="internal-id">(<span title="slurmactiond-internal runner ID">#{{ rid }}</span>, {{ rinfo.target }}{% if rinfo.metadata %} on {{ rinfo.metadata.host_name }}{% endif %})</span>
             </span>
             {%- if rinfo.state.Running is defined %}
@@ -54,8 +54,10 @@
             {%- else %}
             <span class="runner-state">running workflow job #{{ jid }}</span>
             {%- endif %}
-            {%- elif rinfo.state == "Waiting" %}
-            <span class="runner-state">waiting for job assignment</span>
+            {%- elif rinfo.state == "Listening" %}
+            <span class="runner-state">listening for jobs</span>
+            {%- elif rinfo.state == "Starting" %}
+            <span class="runner-state">starting up</span>
             {%- else %}
             <span class="runner-state">queued in SLURM</span>
             {%- endif %}

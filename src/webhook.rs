@@ -217,8 +217,9 @@ impl From<SchedulerStateSnapshot> for Index {
         let mut runners_order: Vec<_> = runners.keys().map(|k| (*k).clone()).collect();
         runners_order.sort_by_key(|rid| match runners[rid].state {
             scheduler::RunnerState::Running(_) => 0,
-            scheduler::RunnerState::Waiting => 1,
-            scheduler::RunnerState::Queued => 2,
+            scheduler::RunnerState::Listening => 1,
+            scheduler::RunnerState::Starting => 2,
+            scheduler::RunnerState::Queued => 3,
         });
         Index {
             jobs_order,
@@ -425,12 +426,30 @@ fn test_render_index() {
                 scheduler::RunnerId(3),
                 RunnerInfo {
                     target: TargetId("target-b".to_string()),
-                    metadata: None,
-                    state: RunnerState::Waiting,
+                    metadata: Some(RunnerMetadata {
+                        runner_name: "runner-3".to_owned(),
+                        slurm_job: slurm::JobId(998),
+                        host_name: "host".to_string(),
+                        concurrent_id: 1,
+                    }),
+                    state: RunnerState::Starting,
                 },
             ),
             (
                 scheduler::RunnerId(4),
+                RunnerInfo {
+                    target: TargetId("target-b".to_string()),
+                    metadata: Some(RunnerMetadata {
+                        runner_name: "runner-4".to_owned(),
+                        slurm_job: slurm::JobId(997),
+                        host_name: "host".to_string(),
+                        concurrent_id: 1,
+                    }),
+                    state: RunnerState::Listening,
+                },
+            ),
+            (
+                scheduler::RunnerId(5),
                 RunnerInfo {
                     target: TargetId("target-a".to_string()),
                     metadata: Some(RunnerMetadata {
