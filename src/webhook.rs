@@ -464,5 +464,9 @@ fn test_render_index() {
         ]),
     };
     let cxt = tera::Context::from_serialize(&Index::from(state)).unwrap();
-    println!("{}", tera.render("index", &cxt).unwrap());
+    std::fs::write(
+        "/tmp/slurmactiond.html",
+        tera.render("index", &cxt).unwrap(),
+    )
+    .unwrap();
 }
