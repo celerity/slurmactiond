@@ -11,7 +11,12 @@
         <h2>Tracked Workflow Jobs</h2>
         {%- for jid in jobs_order %}
         {%- set jinfo = jobs[jid] %}
-        <div class="node job{% if jinfo.state.InProgress is defined %} job-in-progress{% endif %}" id="job-{{ jid }}">
+        {%- if jinfo.state.InProgress is defined or jinfo.state.InProgressOnForeignRunner is defined %}
+        {%- set job_state = 'in-progress' %}
+        {%- else %}
+        {%- set job_state = 'pending' %}
+        {%- endif %}
+        <div class="node job-{{ job_state }}" id="job-{{ jid }}">
             <span class="head">
                 <a href="{{ jinfo.url }}" class="name job-name">{{ jinfo.name }}</a>
                 <span class="internal-id" title="GitHub workflow job ID">(#{{ jid }})</span>
@@ -42,7 +47,12 @@
         <h2>Active Runners</h2>
         {%- for rid in runners_order %}
         {%- set rinfo = runners[rid] %}
-        <div class="node runner{% if rinfo.state.Running is defined %} runner-running{% endif %}" id="runner-{{ rid }}">
+        {%- if rinfo.state.Running is defined %}
+        {%- set runner_state = 'running' %}
+        {%- else %}
+        {%- set runner_state = rinfo.state | lower %}
+        {%- endif %}
+        <div class="node runner-{{ runner_state }}" id="runner-{{ rid }}">
             <span class="head">
                 <span class="name runner-name">{% if rinfo.metadata %}{{ rinfo.metadata.runner_name }}{% else %}unnamed {{ rinfo.target }}{% endif %}</span>
                 <span class="internal-id">(<span title="slurmactiond-internal runner ID">#{{ rid }}</span>, {{ rinfo.target }}{% if rinfo.metadata %} on {{ rinfo.metadata.host_name }}{% endif %})</span>

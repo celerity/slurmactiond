@@ -39,23 +39,35 @@ a:hover {
     font-size: .9rem;
     display: block;
     position: relative;
-    padding: 0.6rem 1rem 0.5rem 2.8rem;
+    padding: 0.6rem 1rem 0.5rem 3.125rem;
     border: 1px solid rgb(185, 185, 185);
     border-radius: 5px;
 }
 .node::before {
     content: '';
-    display: block;
+    display: inline-block;
     position: absolute;
-    width: 0.8rem;
-    height: 0.8rem;
-    background: rgb(212, 212, 38);
-    border-radius: 50%;
+    width: 1.25rem;
+    height: 1.25rem;
     left: 1rem;
-    top: calc(50% - 0.4rem);
+    top: calc(50% - 0.625rem);
+    background-size: cover;
 }
-.node.job-in-progress:before, .node.runner-running:before {
-    background: rgb(32, 155, 23);
+.node.job-pending::before {
+    background-image: url("icons/job-pending.svg");
+}
+.node.job-in-progress::before {
+    background-image: url("icons/job-in-progress.svg");
+}
+.node.runner-queued::before {
+    background-image: url("icons/runner-queued.svg");
+}
+.node.runner-starting::before, .node.runner-listening::before {
+    background-image: url("icons/runner-waiting.svg");
+}
+.node.runner-running::before {
+    background-image: url("icons/runner-running.svg");
+    color: rgb(186, 162, 0);
 }
 .node:target {
     background: rgb(244, 251, 255);
