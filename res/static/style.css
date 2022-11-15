@@ -10,7 +10,7 @@ a.navbar-brand, a.navbar-brand:hover {
     text-decoration: none;
 }
 h2 {
-    margin: 1.5rem 0 1.5rem 0;
+    margin: 2rem 0 1.5rem 0;
     font-size: 1.2rem;
     text-align: center;
 }
@@ -80,4 +80,8 @@ a:hover {
 .col-placeholder {
     text-align: center;
     color: var(--bs-gray);
+}
+.badge {
+    color: inherit;
+    background-color: #eee;
 }

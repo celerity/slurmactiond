@@ -40,7 +40,11 @@
             {%- if jinfo.state.Pending | length == 1 %}
             <span class="job-state">pending for {{ jinfo.state.Pending[0] }}</span>
             {%- else %}
-            <span class="job-state">pending for one of [{% for label in jinfo.state.Pending %}{{ label }}{% if not loop.last %}, {% endif %}{% endfor %}]</span>
+            <span class="job-state">pending for one of
+                {%- for label in jinfo.state.Pending %}
+                <span class="badge rounded-pill">{{ label }}</span>
+                {%- endfor %}
+            </span>
             {%- endif %}
             {%- endif %}
         </div>
