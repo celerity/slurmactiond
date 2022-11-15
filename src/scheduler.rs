@@ -4,7 +4,7 @@ use crate::util;
 use log::{debug, error, info, warn};
 use serde::Serialize;
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
@@ -17,18 +17,46 @@ util::literal_types! {
     pub struct RunnerId(pub u32);
 }
 
-#[derive(Clone, Serialize, Debug, PartialEq, Eq)]
-pub enum WorkflowJobState {
-    Pending(Vec<TargetId>),
-    InProgress(RunnerId),
-    InProgressOnForeignRunner(String),
+#[derive(Clone, Serialize)]
+pub enum AssignedRunner {
+    Scheduled(RunnerId),
+    Foreign(String),
 }
 
-#[derive(Clone, Serialize, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Serialize)]
+pub enum WorkflowJobResult {
+    Success,
+    Failure,
+}
+
+#[derive(Clone, Serialize)]
+pub enum WorkflowJobState {
+    Pending(Vec<TargetId>),
+    InProgress(AssignedRunner),
+}
+
+#[derive(Clone, Serialize)]
+pub enum WorkflowJobTermination {
+    Completed(AssignedRunner, WorkflowJobResult),
+}
+
+#[derive(Clone, Serialize)]
 pub struct WorkflowJobInfo {
+    pub id: github::WorkflowJobId,
     pub name: String,
     pub url: String,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ActiveWorkflowJob {
+    pub info: WorkflowJobInfo,
     pub state: WorkflowJobState,
+}
+
+#[derive(Clone, Serialize)]
+pub struct TerminatedWorkflowJob {
+    pub info: WorkflowJobInfo,
+    pub termination: WorkflowJobTermination,
 }
 
 #[derive(Clone, Serialize)]
@@ -40,23 +68,46 @@ pub enum RunnerState {
 }
 
 #[derive(Clone, Serialize)]
+pub enum RunnerTermination {
+    Completed(github::WorkflowJobId),
+    ListeningTimeout,
+    Failed,
+}
+
+#[derive(Clone, Serialize)]
 pub struct RunnerInfo {
+    pub id: RunnerId,
     pub target: TargetId,
     pub metadata: Option<RunnerMetadata>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ActiveRunner {
+    pub info: RunnerInfo,
     pub state: RunnerState,
 }
 
+#[derive(Clone, Serialize)]
+pub struct TerminatedRunner {
+    pub info: RunnerInfo,
+    pub termination: RunnerTermination,
+}
+
 struct SchedulerState {
-    jobs: HashMap<github::WorkflowJobId, WorkflowJobInfo>,
-    runners: HashMap<RunnerId, RunnerInfo>,
-    rids_by_name: HashMap<String, RunnerId>,
+    active_jobs: HashMap<github::WorkflowJobId, ActiveWorkflowJob>,
+    active_runners: HashMap<RunnerId, ActiveRunner>,
+    active_rids_by_name: HashMap<String, RunnerId>,
     next_runner_id: RunnerId,
+    job_history: VecDeque<TerminatedWorkflowJob>,
+    runner_history: VecDeque<TerminatedRunner>,
 }
 
 #[derive(Clone, Serialize)]
 pub struct SchedulerStateSnapshot {
-    pub jobs: HashMap<github::WorkflowJobId, WorkflowJobInfo>,
-    pub runners: HashMap<RunnerId, RunnerInfo>,
+    pub active_jobs: Vec<ActiveWorkflowJob>,
+    pub active_runners: Vec<ActiveRunner>,
+    pub job_history: Vec<TerminatedWorkflowJob>,
+    pub runner_history: Vec<TerminatedRunner>,
 }
 
 pub trait Executor {
@@ -97,10 +148,12 @@ impl Scheduler {
             runner_labels,
             targets,
             state: Mutex::new(SchedulerState {
-                jobs: HashMap::new(),
-                runners: HashMap::new(),
-                rids_by_name: HashMap::new(),
+                active_jobs: HashMap::new(),
+                active_runners: HashMap::new(),
+                active_rids_by_name: HashMap::new(),
                 next_runner_id: RunnerId(0),
+                job_history: VecDeque::new(),
+                runner_history: VecDeque::new(),
             }),
         }
     }
@@ -110,16 +163,19 @@ impl Scheduler {
     }
 
     pub fn create_runner(&self, target: TargetId) -> RunnerId {
-        let runner_info = RunnerInfo {
-            target,
-            metadata: None,
-            state: RunnerState::Queued,
-        };
-        self.with_state(|state| {
-            let runner_id = state.next_runner_id;
-            state.next_runner_id.0 += 1;
-            state.runners.insert(runner_id, runner_info);
-            runner_id
+        self.with_state(|sched| {
+            let id = sched.next_runner_id;
+            sched.next_runner_id.0 += 1;
+            let runner = ActiveRunner {
+                info: RunnerInfo {
+                    id,
+                    target,
+                    metadata: None,
+                },
+                state: RunnerState::Queued,
+            };
+            sched.active_runners.insert(id, runner);
+            id
         })
     }
 
@@ -130,24 +186,26 @@ impl Scheduler {
     ) -> Result<(), Error> {
         let runner_name = metadata.runner_name.clone();
 
-        let target = self.with_state(|state| {
-            let info = state
-                .runners
+        let target = self.with_state(|sched| {
+            let runner = sched
+                .active_runners
                 .get_mut(&runner_id)
                 .expect("Unknown internal runner id");
-            assert!(matches!(info.state, RunnerState::Queued));
+            assert!(matches!(runner.state, RunnerState::Queued));
 
-            let existing_by_name = state.rids_by_name.insert(runner_name.clone(), runner_id);
+            let existing_by_name = sched
+                .active_rids_by_name
+                .insert(runner_name.clone(), runner_id);
             if existing_by_name.is_some() {
                 return Err(Error::InvalidState(format!(
                     "Runner with name {runner_name} already exists"
                 )));
             }
 
-            info.metadata = Some(metadata);
-            info.state = RunnerState::Starting;
+            runner.info.metadata = Some(metadata);
+            runner.state = RunnerState::Starting;
 
-            Ok(info.target.clone())
+            Ok(runner.info.target.clone())
         })?;
 
         info!("Runner {runner_id} ({runner_name}) connected for target {target}");
@@ -155,28 +213,30 @@ impl Scheduler {
     }
 
     pub fn runner_listening(self: &Arc<Self>, runner_id: RunnerId) {
-        self.with_state(|state| {
-            let info = state
-                .runners
+        self.with_state(|sched| {
+            let runner = sched
+                .active_runners
                 .get_mut(&runner_id)
                 .expect("Unknown internal runner id");
-            if let RunnerState::Starting = info.state {
-                info.state = RunnerState::Listening;
+            if let RunnerState::Starting = runner.state {
+                runner.state = RunnerState::Listening;
             }
         });
     }
 
     pub fn runner_disconnected(self: &Arc<Self>, runner_id: RunnerId) {
         // remove runner independent of job success
-        let (runner_name, runner_state) = self.with_state(|state| {
-            let info = (state.runners)
+        let (runner_name, runner_state) = self.with_state(|sched| {
+            let runner = (sched.active_runners)
                 .remove(&runner_id)
                 .expect("Runner id vanished");
-            let runner_name = info.metadata.expect("Runner had no metadata").runner_name;
-            (state.rids_by_name)
+            let runner_name = (runner.info.metadata)
+                .expect("Runner had no metadata")
+                .runner_name;
+            (sched.active_rids_by_name)
                 .remove(&runner_name)
                 .expect("Runner name vanished");
-            (runner_name, info.state)
+            (runner_name, runner.state)
         });
 
         match runner_state {
@@ -196,21 +256,21 @@ impl Scheduler {
     //  scheduler in some permanent invalid state, will we try again next time, and can we find a
     //  way to avoid endlessly re-trying a failing operation?
     fn schedule(self: &Arc<Self>) -> anyhow::Result<()> {
-        let (mut pending_job_targets, mut unassigned_runner_targets) = self.with_state(|state| {
-            let pending_job_targets: Vec<_> = (state.jobs)
+        let (mut pending_job_targets, mut unassigned_runner_targets) = self.with_state(|sched| {
+            let pending_job_targets: Vec<_> = (sched.active_jobs)
                 .iter()
-                .filter_map(|(_, info)| match &info.state {
+                .filter_map(|(_, job)| match &job.state {
                     WorkflowJobState::Pending(targets) => Some(targets.clone()),
                     _ => None,
                 })
                 .collect();
 
             let mut unassigned_runner_targets = HashMap::new();
-            for (_, info) in &state.runners {
+            for (_, runner) in &sched.active_runners {
                 if let RunnerState::Queued | RunnerState::Starting | RunnerState::Listening =
-                    info.state
+                    runner.state
                 {
-                    util::increment_or_insert(&mut unassigned_runner_targets, &info.target);
+                    util::increment_or_insert(&mut unassigned_runner_targets, &runner.info.target);
                 }
             }
             (pending_job_targets, unassigned_runner_targets)
@@ -260,16 +320,19 @@ impl Scheduler {
         if !targets.is_empty() {
             debug!("Matched labels {labels:?} of job {job_id} to targets {targets:?}");
 
-            self.with_state(|state| {
+            self.with_state(|sched| {
                 // like state.try_insert(), but stable
-                match state.jobs.entry(job_id) {
+                match sched.active_jobs.entry(job_id) {
                     Entry::Occupied(_) => Err(Error::InvalidState(format!(
                         "Workflow job {job_id} is already queued"
                     ))),
                     Entry::Vacant(entry) => {
-                        entry.insert(WorkflowJobInfo {
-                            name: name.to_owned(),
-                            url: url.to_owned(),
+                        entry.insert(ActiveWorkflowJob {
+                            info: WorkflowJobInfo {
+                                id: job_id,
+                                name: name.to_owned(),
+                                url: url.to_owned(),
+                            },
                             state: WorkflowJobState::Pending(targets),
                         });
                         Ok(())
@@ -300,18 +363,18 @@ impl Scheduler {
             ForeignRunnerPickedUpForeignJob,
         }
 
-        let transition = self.with_state(|state| {
+        let transition = self.with_state(|sched| {
             use {RunnerState as Rs, WorkflowJobState as Wjs};
-            let runner_and_state = (state.rids_by_name.get(runner_name))
-                .map(|rid| (rid, &mut state.runners.get_mut(rid).unwrap().state));
-            let workflow_job_state = state.jobs.get_mut(&job_id).map(|info| &mut info.state);
+            let runner_and_state = (sched.active_rids_by_name.get(runner_name))
+                .map(|rid| (rid, &mut sched.active_runners.get_mut(rid).unwrap().state));
+            let workflow_job_state = sched.active_jobs.get_mut(&job_id).map(|job| &mut job.state);
             match (runner_and_state, workflow_job_state) {
                 (
                     Some((runner_id, runner_state @ (Rs::Starting | Rs::Listening))),
                     Some(job_state @ Wjs::Pending(_)),
                 ) => {
                     *runner_state = RunnerState::Running(job_id);
-                    *job_state = Wjs::InProgress(*runner_id);
+                    *job_state = Wjs::InProgress(AssignedRunner::Scheduled(*runner_id));
                     Transition::RunnerPickedUpPendingJob(*runner_id)
                 }
                 (Some((runner_id, runner_state @ (Rs::Starting | Rs::Listening))), None) => {
@@ -319,7 +382,7 @@ impl Scheduler {
                     Transition::RunnerStoleForeignJob(*runner_id)
                 }
                 (None, Some(job_state @ Wjs::Pending(_))) => {
-                    *job_state = Wjs::InProgressOnForeignRunner(runner_name.to_owned());
+                    *job_state = Wjs::InProgress(AssignedRunner::Foreign(runner_name.to_owned()));
                     Transition::ForeignRunnerStolePendingJob
                 }
                 (Some((runner_id, _)), _) => Transition::RunnerNotConnected(*runner_id),
@@ -369,7 +432,7 @@ impl Scheduler {
     pub fn job_completed(self: &Arc<Self>, job_id: github::WorkflowJobId) {
         // It's acceptable for job_id to be unknown in case it's from a foreign job
         if self
-            .with_state(|state| state.jobs.remove(&job_id))
+            .with_state(|sched| sched.active_jobs.remove(&job_id))
             .is_some()
         {
             info!("Job {job_id} completed")
@@ -377,9 +440,11 @@ impl Scheduler {
     }
 
     pub fn snapshot_state(&self) -> SchedulerStateSnapshot {
-        self.with_state(|state| SchedulerStateSnapshot {
-            jobs: state.jobs.clone(),
-            runners: state.runners.clone(),
+        self.with_state(|sched| SchedulerStateSnapshot {
+            active_jobs: sched.active_jobs.values().map(Clone::clone).collect(),
+            active_runners: sched.active_runners.values().map(Clone::clone).collect(),
+            job_history: sched.job_history.iter().map(Clone::clone).collect(),
+            runner_history: sched.runner_history.iter().map(Clone::clone).collect(),
         })
     }
 }
@@ -444,8 +509,8 @@ fn test_scheduler() {
 
     {
         let state = scheduler.snapshot_state();
-        assert_eq!(state.jobs.len(), 1);
-        assert_eq!(state.runners.len(), 1);
+        assert_eq!(state.active_jobs.len(), 1);
+        assert_eq!(state.active_runners.len(), 1);
     }
 
     {
@@ -478,8 +543,8 @@ fn test_scheduler() {
 
     {
         let state = scheduler.snapshot_state();
-        assert_eq!(state.jobs.len(), 1);
-        assert_eq!(state.runners.len(), 1);
+        assert_eq!(state.active_jobs.len(), 1);
+        assert_eq!(state.active_runners.len(), 1);
     }
 
     {
@@ -512,8 +577,8 @@ fn test_scheduler() {
 
     {
         let state = scheduler.snapshot_state();
-        assert!(state.jobs.is_empty());
-        assert!(state.runners.is_empty());
+        assert!(state.active_jobs.is_empty());
+        assert!(state.active_runners.is_empty());
     }
 
     scheduler
@@ -555,8 +620,8 @@ fn test_scheduler() {
 
     {
         let state = scheduler.snapshot_state();
-        assert!(state.jobs.is_empty());
-        assert!(state.runners.is_empty());
+        assert!(state.active_jobs.is_empty());
+        assert!(state.active_runners.is_empty());
     }
 
     scheduler
@@ -592,8 +657,8 @@ fn test_scheduler() {
 
     {
         let state = scheduler.snapshot_state();
-        assert_eq!(state.jobs.len(), 1);
-        assert_eq!(state.runners.len(), 1);
+        assert_eq!(state.active_jobs.len(), 1);
+        assert_eq!(state.active_runners.len(), 1);
     }
 
     {
@@ -626,7 +691,7 @@ fn test_scheduler() {
 
     {
         let state = scheduler.snapshot_state();
-        assert!(state.jobs.is_empty());
-        assert!(state.runners.is_empty());
+        assert!(state.active_jobs.is_empty());
+        assert!(state.active_runners.is_empty());
     }
 }
