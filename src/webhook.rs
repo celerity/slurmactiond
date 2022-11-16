@@ -2,20 +2,20 @@ use std::convert::Infallible;
 use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
 
+use actix_web::{App, HttpMessage, HttpResponse, HttpServer, ResponseError, web};
 use actix_web::dev::ServiceResponse;
 use actix_web::error::ParseError;
 use actix_web::http::header::{ContentType, Header, HeaderName, HeaderValue, TryIntoHeaderValue};
 use actix_web::http::StatusCode;
-use actix_web::{web, App, HttpMessage, HttpResponse, HttpServer, ResponseError};
 use log::{debug, error};
 use serde::Deserialize;
 use tera::Tera;
 
+use crate::{github, paths};
 use crate::config::{ConfigFile, GithubConfig, HttpConfig};
 use crate::github::{WorkflowJob, WorkflowStatus};
 use crate::scheduler::{self, Scheduler, SchedulerStateSnapshot};
 use crate::slurm::SlurmExecutor;
-use crate::{github, paths};
 
 type StaticContent = (&'static str, StatusCode);
 type StaticResult = actix_web::Result<StaticContent>;
@@ -95,7 +95,7 @@ async fn workflow_job_event(
             scheduler.job_enqueued(*job_id, workflow_name, workflow_url, job_labels)
         }
         WorkflowStatus::InProgress => scheduler.job_processing(*job_id, runner_name?.as_str()),
-        WorkflowStatus::Completed => Ok(scheduler.job_completed(*job_id)),
+        WorkflowStatus::Completed => scheduler.job_completed(*job_id),
         _ => Ok(()),
     };
     match result {
@@ -259,6 +259,7 @@ pub async fn main(config_file: ConfigFile) -> anyhow::Result<()> {
         Box::new(SlurmExecutor::new(config_file.clone())),
         runner_labels,
         targets,
+        20, // TODO
     ));
 
     let resource_path = paths::find_resources_path()?;

@@ -1,12 +1,16 @@
-use crate::github;
-use crate::ipc::RunnerMetadata;
-use crate::util;
+use std::collections::{HashMap, VecDeque};
+use std::collections::hash_map::Entry;
+use std::sync::{Arc, Mutex};
+
 use log::{debug, error, info, warn};
 use serde::Serialize;
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
 use thiserror::Error;
+
+use crate::github;
+use crate::ipc::RunnerMetadata;
+#[cfg(test)]
+use crate::slurm;
+use crate::util;
 
 pub type Label = String;
 
@@ -126,6 +130,7 @@ pub struct Scheduler {
     executor: Box<dyn Executor + Send + Sync>,
     runner_labels: Vec<Label>,
     targets: Vec<Target>,
+    history_len: usize,
     state: Mutex<SchedulerState>,
 }
 
@@ -142,11 +147,13 @@ impl Scheduler {
         executor: Box<dyn Executor + Send + Sync>,
         runner_labels: Vec<Label>,
         targets: Vec<Target>,
+        history_len: usize,
     ) -> Self {
         Scheduler {
             executor,
             runner_labels,
             targets,
+            history_len,
             state: Mutex::new(SchedulerState {
                 active_jobs: HashMap::new(),
                 active_runners: HashMap::new(),
@@ -231,11 +238,27 @@ impl Scheduler {
                 .remove(&runner_id)
                 .expect("Runner id vanished");
             let runner_name = (runner.info.metadata)
+                .as_ref()
                 .expect("Runner had no metadata")
-                .runner_name;
+                .runner_name
+                .clone();
             (sched.active_rids_by_name)
                 .remove(&runner_name)
                 .expect("Runner name vanished");
+
+            if sched.runner_history.len() >= self.history_len {
+                sched.runner_history.pop_back();
+            }
+            sched.runner_history.push_front(TerminatedRunner {
+                info: runner.info,
+                // TODO this is oversimplified and incorrect if a runner crashes
+                termination: match runner.state {
+                    RunnerState::Queued | RunnerState::Starting => RunnerTermination::Failed,
+                    RunnerState::Listening => RunnerTermination::ListeningTimeout,
+                    RunnerState::Running(job) => RunnerTermination::Completed(job),
+                },
+            });
+
             (runner_name, runner.state)
         });
 
@@ -429,13 +452,34 @@ impl Scheduler {
         }
     }
 
-    pub fn job_completed(self: &Arc<Self>, job_id: github::WorkflowJobId) {
+    pub fn job_completed(self: &Arc<Self>, job_id: github::WorkflowJobId) -> Result<(), Error> {
         // It's acceptable for job_id to be unknown in case it's from a foreign job
-        if self
-            .with_state(|sched| sched.active_jobs.remove(&job_id))
-            .is_some()
-        {
-            info!("Job {job_id} completed")
+        let completed = self.with_state(|sched| {
+            let (info, assignment) = match sched.active_jobs.remove(&job_id) {
+                Some(ActiveWorkflowJob {
+                         info,
+                         state: WorkflowJobState::InProgress(assignment),
+                     }) => (info, assignment),
+                _ => return false,
+            };
+            let result = WorkflowJobResult::Success; // TODO
+
+            if sched.runner_history.len() >= self.history_len {
+                sched.runner_history.pop_back();
+            }
+            sched.job_history.push_front(TerminatedWorkflowJob {
+                info,
+                termination: WorkflowJobTermination::Completed(assignment, result),
+            });
+
+            true
+        });
+
+        if completed {
+            info!("Job {job_id} completed");
+            Ok(())
+        } else {
+            Err(Error::InvalidState(format!("Job {job_id} not in progress")))
         }
     }
 
@@ -448,9 +492,6 @@ impl Scheduler {
         })
     }
 }
-
-#[cfg(test)]
-use crate::slurm;
 
 #[cfg(test)]
 #[derive(Default, Clone)]
@@ -496,6 +537,7 @@ fn test_scheduler() {
         Box::new(executor.clone()),
         runner_labels,
         targets,
+        2, // history_len
     ));
 
     scheduler
@@ -537,7 +579,7 @@ fn test_scheduler() {
         scheduler
             .job_processing(github::WorkflowJobId(2), "runner-a-0")
             .unwrap();
-        scheduler.job_completed(github::WorkflowJobId(2));
+        scheduler.job_completed(github::WorkflowJobId(2)).unwrap();
         scheduler.runner_disconnected(runner_id);
     }
 
@@ -571,7 +613,7 @@ fn test_scheduler() {
         scheduler
             .job_processing(github::WorkflowJobId(1), "runner-a-1")
             .unwrap();
-        scheduler.job_completed(github::WorkflowJobId(1));
+        scheduler.job_completed(github::WorkflowJobId(1)).unwrap();
         scheduler.runner_disconnected(runner_id);
     }
 
@@ -614,7 +656,7 @@ fn test_scheduler() {
         scheduler
             .job_processing(github::WorkflowJobId(3), "foreign-runner-0")
             .unwrap();
-        scheduler.job_completed(github::WorkflowJobId(3));
+        scheduler.job_completed(github::WorkflowJobId(3)).unwrap();
         scheduler.runner_disconnected(runner_id); // due to timeout
     }
 
@@ -685,7 +727,7 @@ fn test_scheduler() {
         scheduler
             .job_processing(github::WorkflowJobId(4), "runner-b-2")
             .unwrap();
-        scheduler.job_completed(github::WorkflowJobId(4));
+        scheduler.job_completed(github::WorkflowJobId(4)).unwrap();
         scheduler.runner_disconnected(runner_id);
     }
 
