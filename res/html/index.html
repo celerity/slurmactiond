@@ -16,27 +16,27 @@
     <div class="col-12 col-md-6">
         <h2>Tracked Workflow Jobs</h2>
         {%- for job in active_jobs %}
-        <div class="node job-{% if job.state.InProgress is defined %}in-progress{% else %}pending{% endif %}" id="job-{{ job.info.id }}">
-            <span class="head">
-                <a href="{{ job.info.url }}" class="name job-name">{{ job.info.name }}</a>
-                <span class="internal-id" title="GitHub workflow job ID">(#{{ job.info.id }})</span>
-            </span>
-            {%- if job.state.InProgress is defined and job.state.InProgress.Scheduled is defined %}
-            {%- set rid = job.state.InProgress.Scheduled %}
+        <div class="node job-{% if job.state.in_progress is defined %}in-progress{% else %}pending{% endif %}" id="job-{{ job.info.id }}">
+        <span class="head">
+            <a href="{{ job.info.url }}" class="name job-name">{{ job.info.name }}</a>
+            <span class="internal-id" title="GitHub workflow job ID">(#{{ job.info.id }})</span>
+        </span>
+            {%- if job.state.in_progress is defined and job.state.in_progress.scheduled is defined %}
+            {%- set rid = job.state.in_progress.scheduled %}
             {%- set runner = active_runners | filter(attribute="info.id", value=rid) | first %}
             {%- if runner and runner.info.metadata %}
             <span class="job-state">in progress on <a href="#runner-{{ rid }}">{{ runner.info.metadata.runner_name }}</a> <span class="internal-id">(#{{ rid }})</span></span>
             {%- else %}
             <span class="job-state">in progress on runner #{{ rid }}</span>
             {%- endif %}
-            {%- elif job.state.InProgress is defined and job.state.InProgress.Foreign is defined %}
-            <span class="job-state"> in progress on foreign runner <span class="foreign-runner-name">{{ job.state.InProgress.Foreign }}</span></span>
+            {%- elif job.state.in_progress is defined and job.state.in_progress.foreign is defined %}
+            <span class="job-state"> in progress on foreign runner <span class="foreign-runner-name">{{ job.state.in_progress.foreign }}</span></span>
             {%- else %}
-            <span class="job-state">pending for {% if job.state.Pending | length > 1 %}one of{% endif %}
-                {%- for label in job.state.Pending %}
-                <span class="badge rounded-pill">{{ label }}</span>
-                {%- endfor %}
-            </span>
+            <span class="job-state">pending for {% if job.state.pending | length > 1 %}one of{% endif %}
+            {%- for label in job.state.pending %}
+            <span class="badge rounded-pill">{{ label }}</span>
+            {%- endfor %}
+        </span>
             {%- endif %}
         </div>
         {%- endfor %}
@@ -47,22 +47,22 @@
     <div class="col-12 col-md-6">
         <h2>Active Runners</h2>
         {%- for runner in active_runners %}
-        <div class="node runner-{%- if runner.state.Running is defined %}running{% else %}{{ runner.state | lower }}{% endif %}" id="runner-{{ runner.info.id }}">
-            <span class="head">
-                <span class="name runner-name">{% if runner.info.metadata %}{{ runner.info.metadata.runner_name }}{% else %}unnamed {{ runner.info.target }}{% endif %}</span>
-                <span class="internal-id">(<span title="slurmactiond-internal runner ID">#{{ runner.info.id }}</span>, {{ runner.info.target }}{% if runner.info.metadata %} on {{ runner.info.metadata.host_name }}{% endif %})</span>
-            </span>
-            {%- if runner.state.Running is defined %}
-            {%- set jid = runner.state.Running %}
+        <div class="node runner-{%- if runner.state.running is defined %}running{% else %}{{ runner.state | lower }}{% endif %}" id="runner-{{ runner.info.id }}">
+        <span class="head">
+            <span class="name runner-name">{% if runner.info.metadata %}{{ runner.info.metadata.runner_name }}{% else %}unnamed {{ runner.info.target }}{% endif %}</span>
+            <span class="internal-id">(<span title="slurmactiond-internal runner ID">#{{ runner.info.id }}</span>, {{ runner.info.target }}{% if runner.info.metadata %} on {{ runner.info.metadata.host_name }}{% endif %})</span>
+        </span>
+            {%- if runner.state.running is defined %}
+            {%- set jid = runner.state.running %}
             {%- set job = active_jobs | filter(attribute="info.id", value=jid) | first %}
             {%- if job %}
             <span class="runner-state">running <a href="#job-{{ jid }}">{{ job.info.name }}</a> <span class="internal-id">(#{{ jid }})</span></span>
             {%- else %}
             <span class="runner-state">running workflow job #{{ jid }}</span>
             {%- endif %}
-            {%- elif runner.state == "Listening" %}
+            {%- elif runner.state == "listening" %}
             <span class="runner-state">listening for jobs</span>
-            {%- elif runner.state == "Starting" %}
+            {%- elif runner.state == "starting" %}
             <span class="runner-state">starting up</span>
             {%- else %}
             <span class="runner-state">queued in SLURM</span>
@@ -74,6 +74,38 @@
         {%- endif %}
     </div>
 </div>
+{%- if job_history or runner_history %}
+<div class="row">
+    <div class="col-12 col-md-6">
+        {%- if job_history %}
+        <h3>Workflow Job History</h3>
+        {%- for job in job_history %}
+        <div class="node " id="job-{{ job.info.id }}">
+            <span class="head">
+                <a href="{{ job.info.url }}" class="name job-name">{{ job.info.name }}</a>
+                <span class="internal-id" title="GitHub workflow job ID">(#{{ job.info.id }})</span>
+            </span>
+            <span class="job-state">terminated</span>
+        </div>
+        {%- endfor %}
+        {%- endif %}
+    </div>
+    <div class="col-12 col-md-6">
+        {%- if runner_history %}
+        <h3>Runner History</h3>
+        {%- for runner in runner_history %}
+        <div class="node" id="runner-{{ runner.info.id }}">
+            <span class="head">
+                <span class="name runner-name">{% if runner.info.metadata %}{{ runner.info.metadata.runner_name }}{% else %}unnamed {{ runner.info.target }}{% endif %}</span>
+                <span class="internal-id">(<span title="slurmactiond-internal runner ID">#{{ runner.info.id }}</span>, {{ runner.info.target }}{% if runner.info.metadata %} on {{ runner.info.metadata.host_name }}{% endif %})</span>
+            </span>
+            <span class="runner-state">terminated</span>
+        </div>
+        {%- endfor %}
+        {%- endif %}
+    </div>
+</div>
+{%- endif %}
 </div>
 </body>
 </html>

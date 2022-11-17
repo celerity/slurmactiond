@@ -10,7 +10,7 @@ use awc::http::Method;
 use awc::{http::header, Client, SendClientRequest};
 use log::{debug, info};
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 util::literal_types! {
     // A workflow _run_ refers to a collection of jobs, created by a trigger.
@@ -173,7 +173,7 @@ pub async fn download(url: &str, to: &mut dyn io::Write) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Deserialize, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowStatus {
     Completed,
@@ -189,6 +189,13 @@ pub enum WorkflowStatus {
     Queued,
     Requested,
     Waiting,
+}
+
+#[derive(Copy, Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowConclusion {
+    Success,
+    Failure,
 }
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]

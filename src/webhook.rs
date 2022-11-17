@@ -2,20 +2,20 @@ use std::convert::Infallible;
 use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
 
-use actix_web::{App, HttpMessage, HttpResponse, HttpServer, ResponseError, web};
 use actix_web::dev::ServiceResponse;
 use actix_web::error::ParseError;
 use actix_web::http::header::{ContentType, Header, HeaderName, HeaderValue, TryIntoHeaderValue};
 use actix_web::http::StatusCode;
+use actix_web::{web, App, HttpMessage, HttpResponse, HttpServer, ResponseError};
 use log::{debug, error};
 use serde::Deserialize;
 use tera::Tera;
 
-use crate::{github, paths};
 use crate::config::{ConfigFile, GithubConfig, HttpConfig};
-use crate::github::{WorkflowJob, WorkflowStatus};
+use crate::github::{WorkflowConclusion, WorkflowJob, WorkflowStatus};
 use crate::scheduler::{self, Scheduler, SchedulerStateSnapshot};
 use crate::slurm::SlurmExecutor;
+use crate::{github, paths};
 
 type StaticContent = (&'static str, StatusCode);
 type StaticResult = actix_web::Result<StaticContent>;
@@ -63,6 +63,7 @@ fn internal_server_error(e: impl Display) -> InternalServerError {
 #[derive(Deserialize, Debug, PartialEq, Eq)]
 struct WorkflowJobPayload {
     action: WorkflowStatus,
+    conclusion: Option<WorkflowConclusion>,
     workflow_job: WorkflowJob,
 }
 
@@ -72,6 +73,7 @@ async fn workflow_job_event(
 ) -> StaticResult {
     let WorkflowJobPayload {
         action,
+        conclusion,
         workflow_job:
             WorkflowJob {
                 run_id,
@@ -95,7 +97,11 @@ async fn workflow_job_event(
             scheduler.job_enqueued(*job_id, workflow_name, workflow_url, job_labels)
         }
         WorkflowStatus::InProgress => scheduler.job_processing(*job_id, runner_name?.as_str()),
-        WorkflowStatus::Completed => scheduler.job_completed(*job_id),
+        WorkflowStatus::Completed => {
+            let conclusion = conclusion
+                .ok_or_else(|| BadRequest("Missing conclusion to completed job".to_string()))?;
+            scheduler.job_completed(*job_id, conclusion)
+        }
         _ => Ok(()),
     };
     match result {
@@ -313,6 +319,7 @@ fn test_deserialize_payload() {
         payload,
         WorkflowJobPayload {
             action: InProgress,
+            conclusion: None,
             workflow_job: WorkflowJob {
                 run_id: WorkflowRunId(940463255),
                 job_id: WorkflowJobId(2832853555),
@@ -328,11 +335,12 @@ fn test_deserialize_payload() {
 
 #[test]
 fn test_render_index() {
-    use crate::github::WorkflowJobId;
+    use crate::github::{WorkflowConclusion, WorkflowJobId};
     use crate::ipc::RunnerMetadata;
     use crate::scheduler::{
-        ActiveRunner, ActiveWorkflowJob, AssignedRunner, RunnerInfo, RunnerState,
-        SchedulerStateSnapshot, TargetId, WorkflowJobInfo, WorkflowJobState,
+        ActiveRunner, ActiveWorkflowJob, AssignedRunner, RunnerId, RunnerInfo, RunnerState,
+        RunnerTermination, SchedulerStateSnapshot, TargetId, TerminatedRunner,
+        TerminatedWorkflowJob, WorkflowJobInfo, WorkflowJobState, WorkflowJobTermination,
     };
     use crate::slurm;
 
@@ -452,8 +460,56 @@ fn test_render_index() {
                 state: RunnerState::Running(WorkflowJobId(2222)),
             },
         ],
-        job_history: vec![],
-        runner_history: vec![],
+        job_history: vec![
+            TerminatedWorkflowJob {
+                info: WorkflowJobInfo {
+                    id: WorkflowJobId(887),
+                    name: "historic-job".to_string(),
+                    url: "https://github.com/octo-org/example-workflow/runs/4".to_string(),
+                },
+                termination: WorkflowJobTermination::Completed(
+                    AssignedRunner::Scheduled(RunnerId(776)),
+                    WorkflowConclusion::Success,
+                ),
+            },
+            TerminatedWorkflowJob {
+                info: WorkflowJobInfo {
+                    id: WorkflowJobId(888),
+                    name: "historic-job".to_string(),
+                    url: "https://github.com/octo-org/example-workflow/runs/4".to_string(),
+                },
+                termination: WorkflowJobTermination::Completed(
+                    AssignedRunner::Scheduled(RunnerId(777)),
+                    WorkflowConclusion::Failure,
+                ),
+            },
+        ],
+        runner_history: vec![
+            TerminatedRunner {
+                info: RunnerInfo {
+                    id: RunnerId(776),
+                    target: TargetId("target-a".to_string()),
+                    metadata: None,
+                },
+                termination: RunnerTermination::Failed,
+            },
+            TerminatedRunner {
+                info: RunnerInfo {
+                    id: RunnerId(777),
+                    target: TargetId("target-b".to_string()),
+                    metadata: None,
+                },
+                termination: RunnerTermination::Failed,
+            },
+            TerminatedRunner {
+                info: RunnerInfo {
+                    id: RunnerId(778),
+                    target: TargetId("target-a".to_string()),
+                    metadata: None,
+                },
+                termination: RunnerTermination::Failed,
+            },
+        ],
     };
 
     sort_snapshot(&mut state);
