@@ -491,7 +491,7 @@ fn test_render_index() {
                     target: TargetId("target-a".to_string()),
                     metadata: None,
                 },
-                termination: RunnerTermination::Failed,
+                termination: RunnerTermination::Completed(WorkflowJobId(999999)),
             },
             TerminatedRunner {
                 info: RunnerInfo {

@@ -85,7 +85,11 @@
                 <a href="{{ job.info.url }}" class="name job-name">{{ job.info.name }}</a>
                 <span class="internal-id" title="GitHub workflow job ID">(#{{ job.info.id }})</span>
             </span>
-            <span class="job-state">terminated</span>
+            <span class="job-state">
+            {%- set assigned_runner = job.termination.completed.0 %}
+            {%- set conclusion = job.termination.completed.1 %}
+            {%- if conclusion == "success" %}succeeded{% else %}failed{% endif %} on {% if assigned_runner.scheduled is defined %}runner {{ assigned_runner.scheduled }}{%- else %}foreign runner {{ assigned_runner.foreign }}{%- endif %}
+            </span>
         </div>
         {%- endfor %}
         {%- endif %}
@@ -99,7 +103,13 @@
                 <span class="name runner-name">{% if runner.info.metadata %}{{ runner.info.metadata.runner_name }}{% else %}unnamed {{ runner.info.target }}{% endif %}</span>
                 <span class="internal-id">(<span title="slurmactiond-internal runner ID">#{{ runner.info.id }}</span>, {{ runner.info.target }}{% if runner.info.metadata %} on {{ runner.info.metadata.host_name }}{% endif %})</span>
             </span>
-            <span class="runner-state">terminated</span>
+            {%- if runner.termination.completed is defined %}
+            <span class="runner-state">completed workflow job #{{ runner.termination.completed }}</span>
+            {%- elif runner.termination == "listening_timeout" %}
+            <span class="runner-state">timed out listening for jobs</span>
+            {%- else %}
+            <span class="runner-state">failed</span>
+            {%- endif %}
         </div>
         {%- endfor %}
         {%- endif %}
