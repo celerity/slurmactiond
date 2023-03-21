@@ -3,7 +3,7 @@ use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use log::{debug, error, info, warn};
+use log::{debug, error, warn};
 use nix::unistd::getuid;
 use tokio::process::{Child, Command};
 
@@ -198,23 +198,25 @@ impl SlurmExecutor {
         runner_id: scheduler::RunnerId,
         mut slurm_runner: RunnerJob,
         scheduler: &Arc<Scheduler>,
-    ) -> anyhow::Result<()> {
+    ) {
         loop {
-            let event = slurm_runner
-                .next_event()
-                .await
-                .with_context(|| "Waiting for event from SLURM job")?;
-            match event {
-                RunnerJobEvent::Starting(metadata) => {
-                    scheduler.runner_connected(runner_id, metadata)?;
+            match slurm_runner.next_event().await {
+                Ok(RunnerJobEvent::Starting(metadata)) => {
+                    if let Err(e) = scheduler.runner_connected(runner_id, metadata) {
+                        error!("{e:#}");
+                        break;
+                    }
                 }
-                RunnerJobEvent::Listening => {
+                Ok(RunnerJobEvent::Listening) => {
                     scheduler.runner_listening(runner_id);
                 }
-                RunnerJobEvent::Exited(exit_status) => {
-                    scheduler.runner_disconnected(runner_id);
-                    info!("SLURM job exited with status {}", exit_status);
-                    break Ok(());
+                Ok(RunnerJobEvent::Exited(exit)) => {
+                    scheduler.runner_disconnected(runner_id, Ok(exit.success()));
+                    break;
+                }
+                Err(e) => {
+                    scheduler.runner_disconnected(runner_id, Err(e));
+                    break;
                 }
             }
         }
@@ -230,9 +232,7 @@ impl scheduler::Executor for SlurmExecutor {
 
         let scheduler = scheduler.clone();
         actix_web::rt::spawn(async move {
-            if let Err(e) = Self::supervise_runner_job(runner_id, slurm_runner, &scheduler).await {
-                error!("{e:#}");
-            }
+            Self::supervise_runner_job(runner_id, slurm_runner, &scheduler).await;
         }); // TODO manage JoinHandle in RunnerInfo
 
         Ok(())

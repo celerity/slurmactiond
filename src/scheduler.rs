@@ -69,7 +69,7 @@ pub enum RunnerState {
     Running(github::WorkflowJobId),
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Copy, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunnerTermination {
     Completed(github::WorkflowJobId),
@@ -235,9 +235,13 @@ impl Scheduler {
         });
     }
 
-    pub fn runner_disconnected(self: &Arc<Self>, runner_id: RunnerId) {
+    pub fn runner_disconnected(
+        self: &Arc<Self>,
+        runner_id: RunnerId,
+        result: anyhow::Result<bool /* exited successfully */>,
+    ) {
         // remove runner independent of job success
-        let (runner_name, runner_state) = self.with_state(|sched| {
+        let (runner_name, runner_termination) = self.with_state(|sched| {
             let runner = (sched.active_runners)
                 .remove(&runner_id)
                 .expect("Runner id vanished");
@@ -253,29 +257,37 @@ impl Scheduler {
             if sched.runner_history.len() >= self.history_len {
                 sched.runner_history.pop_back();
             }
+            let termination = match (runner.state, &result) {
+                (RunnerState::Listening, Ok(_)) => RunnerTermination::ListeningTimeout,
+                (RunnerState::Running(job), Ok(true)) => RunnerTermination::Completed(job),
+                _ => RunnerTermination::Failed,
+            };
             sched.runner_history.push_front(TerminatedRunner {
                 info: runner.info,
-                // TODO this is oversimplified and incorrect if a runner crashes
-                termination: match runner.state {
-                    RunnerState::Queued | RunnerState::Starting => RunnerTermination::Failed,
-                    RunnerState::Listening => RunnerTermination::ListeningTimeout,
-                    RunnerState::Running(job) => RunnerTermination::Completed(job),
-                },
+                termination,
             });
-
-            (runner_name, runner.state)
+            (runner_name, termination)
         });
 
-        match runner_state {
-            RunnerState::Queued | RunnerState::Starting | RunnerState::Listening => {
-                warn!(
-                    "Runner {runner_id} ({runner_name}) disconnected {} {}",
-                    "without having picked up a job. This might be due to a",
-                    "timeout or a foreign runner picking up our jobs."
-                );
-                self.schedule().unwrap_or_else(|e| error!("{e:#}"))
+        match runner_termination {
+            RunnerTermination::Completed(job) => {
+                info!("Runner {runner_id} ({runner_name}) completed job {job}")
             }
-            RunnerState::Running(_) => info!("Runner {runner_id} ({runner_name}) disconnected"),
+            RunnerTermination::ListeningTimeout => {
+                warn!(
+                    "Runner {runner_id} ({runner_name}) timed out waiting for a job. {}",
+                    "This might be due to a a foreign runner picking up our jobs."
+                );
+                self.schedule().unwrap_or_else(|e| error!("{e:#}"));
+            }
+            RunnerTermination::Failed => {
+                let message = match result {
+                    Ok(status) => format!("(prematurely) exited with status {status}"),
+                    Err(e) => format!("{e:#}"),
+                };
+                error!("Runner {runner_id} ({runner_name}) failed: {message}");
+                self.schedule().unwrap_or_else(|e| error!("{e:#}"));
+            }
         }
     }
 
@@ -600,7 +612,7 @@ fn test_scheduler() {
                 github::WorkflowConclusion::Success,
             )
             .unwrap();
-        scheduler.runner_disconnected(runner_id);
+        scheduler.runner_disconnected(runner_id, Ok(true));
     }
 
     {
@@ -639,7 +651,7 @@ fn test_scheduler() {
                 github::WorkflowConclusion::Success,
             )
             .unwrap();
-        scheduler.runner_disconnected(runner_id);
+        scheduler.runner_disconnected(runner_id, Ok(true));
     }
 
     {
@@ -687,7 +699,7 @@ fn test_scheduler() {
                 github::WorkflowConclusion::Success,
             )
             .unwrap();
-        scheduler.runner_disconnected(runner_id); // due to timeout
+        scheduler.runner_disconnected(runner_id, Ok(false)); // due to timeout
     }
 
     {
@@ -724,7 +736,7 @@ fn test_scheduler() {
             .unwrap();
 
         // spurious runner timeout - requires a reschedule
-        scheduler.runner_disconnected(runner_id);
+        scheduler.runner_disconnected(runner_id, Ok(false));
     }
 
     {
@@ -763,7 +775,7 @@ fn test_scheduler() {
                 github::WorkflowConclusion::Success,
             )
             .unwrap();
-        scheduler.runner_disconnected(runner_id);
+        scheduler.runner_disconnected(runner_id, Ok(true));
     }
 
     {
