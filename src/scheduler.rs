@@ -521,8 +521,8 @@ impl Scheduler {
                 None => return Transition::UntrackedJobTerminated,
             };
 
-            if sched.runner_history.len() >= self.history_len {
-                sched.runner_history.pop_back();
+            if sched.job_history.len() >= self.history_len {
+                sched.job_history.pop_back();
             }
             sched.job_history.push_front(terminated_job);
             Transition::TrackedJobTerminated

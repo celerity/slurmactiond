@@ -278,7 +278,7 @@ pub async fn main(config_file: ConfigFile) -> anyhow::Result<()> {
         Box::new(SlurmExecutor::new(config_file.clone())),
         runner_labels,
         targets,
-        20, // TODO
+        config_file.config.scheduler.history_len,
     ));
 
     let resource_path = paths::find_resources_path()?;

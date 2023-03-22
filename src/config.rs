@@ -82,14 +82,37 @@ pub struct HttpConfig {
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct SchedulerConfig {
+    #[serde(default = "SchedulerConfig::default_history_len")]
+    pub history_len: usize,
+}
+
+impl SchedulerConfig {
+    fn default_history_len() -> usize {
+        20
+    }
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        SchedulerConfig {
+            history_len: Self::default_history_len(),
+        }
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub http: HttpConfig,
+    #[serde(default)]
+    pub scheduler: SchedulerConfig,
     pub github: GithubConfig,
     pub slurm: SlurmConfig,
     #[serde(rename = "action_runner")]
     pub runner: RunnerConfig,
     #[serde(default)]
-    pub targets: HashMap<TargetId, TargetConfig>,
+    pub targets: HashMap<TargetId, TargetConfig>, // TODO move into SchedulerConfig
 }
 
 impl Config {}

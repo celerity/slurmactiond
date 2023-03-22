@@ -2,6 +2,9 @@
 bind = "127.0.0.1:8020"
 secret = "as specified in the Webhook Configuration"
 
+[scheduler]
+history_len = 20
+
 [github]
 entity = "celerity/slurmactiond"
 api_token = "ghp_5Hx6y27fF10fjF01jfJpQrtT915931520A"
