@@ -12,8 +12,8 @@ use serde::Deserialize;
 use tera::Tera;
 
 use crate::config::{ConfigFile, GithubConfig, HttpConfig};
-use crate::github::{WorkflowConclusion, WorkflowJob, WorkflowStatus};
-use crate::scheduler::{self, Scheduler, SchedulerStateSnapshot};
+use crate::github::{WorkflowJob, WorkflowJobConclusion, WorkflowStatus};
+use crate::scheduler::{self, Scheduler, SchedulerStateSnapshot, WorkflowJobTermination};
 use crate::slurm::SlurmExecutor;
 use crate::{github, paths};
 
@@ -99,7 +99,21 @@ async fn workflow_job_event(
         WorkflowStatus::Completed => {
             let conclusion = conclusion
                 .ok_or_else(|| BadRequest("Missing conclusion to completed job".to_string()))?;
-            scheduler.job_completed(*job_id, conclusion)
+            let termination = match conclusion {
+                WorkflowJobConclusion::Success => WorkflowJobTermination::CompletedWithSuccess,
+                WorkflowJobConclusion::Failure => WorkflowJobTermination::CompletedWithFailure,
+                WorkflowJobConclusion::Cancelled => WorkflowJobTermination::Cancelled,
+            };
+            scheduler.job_terminated(*job_id, termination)
+        }
+        WorkflowStatus::Cancelled => {
+            scheduler.job_terminated(*job_id, WorkflowJobTermination::Cancelled)
+        }
+        WorkflowStatus::TimedOut => {
+            scheduler.job_terminated(*job_id, WorkflowJobTermination::TimedOut)
+        }
+        WorkflowStatus::Failure => {
+            scheduler.job_terminated(*job_id, WorkflowJobTermination::Failed)
         }
         _ => Ok(()),
     };
@@ -318,7 +332,6 @@ fn test_deserialize_payload() {
         payload,
         WorkflowJobPayload {
             action: InProgress,
-            conclusion: None,
             workflow_job: WorkflowJob {
                 run_id: WorkflowRunId(940463255),
                 job_id: WorkflowJobId(2832853555),
@@ -327,6 +340,7 @@ fn test_deserialize_payload() {
                 labels: Vec::from(["gpu", "db-app", "dc-03"].map(String::from)),
                 runner_name: Some("my runner".to_owned()),
                 status: InProgress,
+                conclusion: None,
             },
         }
     )
@@ -334,7 +348,7 @@ fn test_deserialize_payload() {
 
 #[test]
 fn test_render_index() {
-    use crate::github::{WorkflowConclusion, WorkflowJobId};
+    use crate::github::WorkflowJobId;
     use crate::ipc::RunnerMetadata;
     use crate::scheduler::{
         ActiveRunner, ActiveWorkflowJob, AssignedRunner, RunnerId, RunnerInfo, RunnerState,
@@ -462,14 +476,30 @@ fn test_render_index() {
         job_history: vec![
             TerminatedWorkflowJob {
                 info: WorkflowJobInfo {
+                    id: WorkflowJobId(885),
+                    name: "historic-job".to_string(),
+                    url: "https://github.com/octo-org/example-workflow/runs/2".to_string(),
+                },
+                assignment: None,
+                termination: WorkflowJobTermination::TimedOut,
+            },
+            TerminatedWorkflowJob {
+                info: WorkflowJobInfo {
+                    id: WorkflowJobId(886),
+                    name: "historic-job".to_string(),
+                    url: "https://github.com/octo-org/example-workflow/runs/3".to_string(),
+                },
+                assignment: Some(AssignedRunner::Scheduled(RunnerId(775))),
+                termination: WorkflowJobTermination::Cancelled,
+            },
+            TerminatedWorkflowJob {
+                info: WorkflowJobInfo {
                     id: WorkflowJobId(887),
                     name: "historic-job".to_string(),
                     url: "https://github.com/octo-org/example-workflow/runs/4".to_string(),
                 },
-                termination: WorkflowJobTermination::Completed(
-                    AssignedRunner::Scheduled(RunnerId(776)),
-                    WorkflowConclusion::Success,
-                ),
+                assignment: Some(AssignedRunner::Scheduled(RunnerId(776))),
+                termination: WorkflowJobTermination::CompletedWithSuccess,
             },
             TerminatedWorkflowJob {
                 info: WorkflowJobInfo {
@@ -477,10 +507,8 @@ fn test_render_index() {
                     name: "historic-job".to_string(),
                     url: "https://github.com/octo-org/example-workflow/runs/4".to_string(),
                 },
-                termination: WorkflowJobTermination::Completed(
-                    AssignedRunner::Scheduled(RunnerId(777)),
-                    WorkflowConclusion::Failure,
-                ),
+                assignment: Some(AssignedRunner::Scheduled(RunnerId(777))),
+                termination: WorkflowJobTermination::CompletedWithFailure,
             },
         ],
         runner_history: vec![

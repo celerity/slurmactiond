@@ -35,10 +35,14 @@ pub enum WorkflowJobState {
     InProgress(AssignedRunner),
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Debug, Copy, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowJobTermination {
-    Completed(AssignedRunner, github::WorkflowConclusion),
+    CompletedWithSuccess,
+    CompletedWithFailure,
+    Cancelled,
+    Failed,
+    TimedOut,
 }
 
 #[derive(Clone, Serialize)]
@@ -57,6 +61,7 @@ pub struct ActiveWorkflowJob {
 #[derive(Clone, Serialize)]
 pub struct TerminatedWorkflowJob {
     pub info: WorkflowJobInfo,
+    pub assignment: Option<AssignedRunner>,
     pub termination: WorkflowJobTermination,
 }
 
@@ -468,10 +473,10 @@ impl Scheduler {
         }
     }
 
-    pub fn job_completed(
+    pub fn job_terminated(
         self: &Arc<Self>,
         job_id: github::WorkflowJobId,
-        conclusion: github::WorkflowConclusion,
+        termination: WorkflowJobTermination,
     ) -> Result<(), Error> {
         enum Transition {
             TrackedJobTerminated,
@@ -480,11 +485,15 @@ impl Scheduler {
         }
 
         let transition = self.with_state(|sched| {
-            let (info, assignment) = match sched.active_jobs.remove(&job_id) {
+            let terminated_job = match sched.active_jobs.remove(&job_id) {
                 Some(ActiveWorkflowJob {
                     info,
                     state: WorkflowJobState::InProgress(assignment),
-                }) => (info, assignment),
+                }) => TerminatedWorkflowJob {
+                    info,
+                    assignment: Some(assignment),
+                    termination,
+                },
                 Some(_) => return Transition::TrackedJobNotInProgress,
                 // It's acceptable for job_id to be unknown in case it's from a foreign job
                 None => return Transition::UntrackedJobTerminated,
@@ -493,16 +502,12 @@ impl Scheduler {
             if sched.runner_history.len() >= self.history_len {
                 sched.runner_history.pop_back();
             }
-            sched.job_history.push_front(TerminatedWorkflowJob {
-                info,
-                termination: WorkflowJobTermination::Completed(assignment, conclusion),
-            });
-
+            sched.job_history.push_front(terminated_job);
             Transition::TrackedJobTerminated
         });
 
         match transition {
-            Transition::TrackedJobTerminated => Ok(info!("Job {job_id} completed")),
+            Transition::TrackedJobTerminated => Ok(info!("Job {job_id} {termination:?}")),
             Transition::UntrackedJobTerminated => Ok(()),
             Transition::TrackedJobNotInProgress => {
                 Err(Error::InvalidState(format!("Job {job_id} not in progress")))
@@ -607,9 +612,9 @@ fn test_scheduler() {
             .job_processing(github::WorkflowJobId(2), "runner-a-0")
             .unwrap();
         scheduler
-            .job_completed(
+            .job_terminated(
                 github::WorkflowJobId(2),
-                github::WorkflowConclusion::Success,
+                WorkflowJobTermination::CompletedWithSuccess,
             )
             .unwrap();
         scheduler.runner_disconnected(runner_id, Ok(true));
@@ -646,9 +651,9 @@ fn test_scheduler() {
             .job_processing(github::WorkflowJobId(1), "runner-a-1")
             .unwrap();
         scheduler
-            .job_completed(
+            .job_terminated(
                 github::WorkflowJobId(1),
-                github::WorkflowConclusion::Success,
+                WorkflowJobTermination::CompletedWithSuccess,
             )
             .unwrap();
         scheduler.runner_disconnected(runner_id, Ok(true));
@@ -694,9 +699,9 @@ fn test_scheduler() {
             .job_processing(github::WorkflowJobId(3), "foreign-runner-0")
             .unwrap();
         scheduler
-            .job_completed(
+            .job_terminated(
                 github::WorkflowJobId(3),
-                github::WorkflowConclusion::Success,
+                WorkflowJobTermination::CompletedWithSuccess,
             )
             .unwrap();
         scheduler.runner_disconnected(runner_id, Ok(false)); // due to timeout
@@ -770,9 +775,9 @@ fn test_scheduler() {
             .job_processing(github::WorkflowJobId(4), "runner-b-2")
             .unwrap();
         scheduler
-            .job_completed(
+            .job_terminated(
                 github::WorkflowJobId(4),
-                github::WorkflowConclusion::Success,
+                WorkflowJobTermination::CompletedWithSuccess,
             )
             .unwrap();
         scheduler.runner_disconnected(runner_id, Ok(true));

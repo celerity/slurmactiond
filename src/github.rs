@@ -193,9 +193,10 @@ pub enum WorkflowStatus {
 
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkflowConclusion {
+pub enum WorkflowJobConclusion {
     Success,
     Failure,
+    Cancelled,
 }
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
@@ -210,7 +211,7 @@ pub struct WorkflowJob {
     #[serde(deserialize_with = "util::empty_string_as_none")]
     pub runner_name: Option<String>,
     pub status: WorkflowStatus,
-    pub conclusion: Option<WorkflowConclusion>,
+    pub conclusion: Option<WorkflowJobConclusion>,
 }
 
 #[derive(Deserialize)]

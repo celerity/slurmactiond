@@ -86,9 +86,25 @@
                 <span class="internal-id" title="GitHub workflow job ID">(#{{ job.info.id }})</span>
             </span>
             <span class="job-state">
-            {%- set assigned_runner = job.termination.completed.0 %}
-            {%- set conclusion = job.termination.completed.1 %}
-            {%- if conclusion == "success" %}succeeded{% else %}failed{% endif %} on {% if assigned_runner.scheduled is defined %}runner {{ assigned_runner.scheduled }}{%- else %}foreign runner {{ assigned_runner.foreign }}{%- endif %}
+            {%- if job.termination == "completed_with_success" %}
+            succeeded
+            {%- elif job.termination == "completed_with_failure" %}
+            failed
+            {%- elif job.termination == "cancelled" %}
+            cancelled
+            {%- elif job.termination == "failed" %}
+            failed to start
+            {%- elif job.termination == "timed_out" %}
+            timed out
+            {%- endif %}
+            {%- if job.assignment %}
+            on
+            {%- if job.assignment.scheduled is defined %}
+            runner #{{ job.assignment.scheduled }}
+            {%- else %}
+            foreign runner {{ job.assignment.foreign }}
+            {%- endif %}
+            {%- endif %}
             </span>
         </div>
         {%- endfor %}
