@@ -116,7 +116,9 @@ struct SchedulerState {
     active_rids_by_name: HashMap<String, RunnerId>,
     next_runner_id: RunnerId,
     job_history: VecDeque<TerminatedWorkflowJob>,
+    full_job_history_len: usize,
     runner_history: VecDeque<TerminatedRunner>,
+    full_runner_history_len: usize,
 }
 
 #[derive(Clone, Serialize)]
@@ -124,7 +126,9 @@ pub struct SchedulerStateSnapshot {
     pub active_jobs: Vec<ActiveWorkflowJob>,
     pub active_runners: Vec<ActiveRunner>,
     pub job_history: Vec<TerminatedWorkflowJob>,
+    pub full_job_history_len: usize,
     pub runner_history: Vec<TerminatedRunner>,
+    pub full_runner_history_len: usize,
 }
 
 pub trait Executor {
@@ -178,7 +182,9 @@ impl Scheduler {
                 active_rids_by_name: HashMap::new(),
                 next_runner_id: RunnerId(0),
                 job_history,
+                full_job_history_len: 0,
                 runner_history,
+                full_runner_history_len: 0,
             }),
         }
     }
@@ -288,6 +294,7 @@ impl Scheduler {
                 termination,
                 terminated_at,
             });
+            sched.full_runner_history_len += 1;
             (runner_name, termination)
         });
 
@@ -525,6 +532,7 @@ impl Scheduler {
                 sched.job_history.pop_back();
             }
             sched.job_history.push_front(terminated_job);
+            sched.full_job_history_len += 1;
             Transition::TrackedJobTerminated
         });
 
@@ -542,7 +550,9 @@ impl Scheduler {
             active_jobs: sched.active_jobs.values().map(Clone::clone).collect(),
             active_runners: sched.active_runners.values().map(Clone::clone).collect(),
             job_history: sched.job_history.iter().map(Clone::clone).collect(),
+            full_job_history_len: sched.full_job_history_len,
             runner_history: sched.runner_history.iter().map(Clone::clone).collect(),
+            full_runner_history_len: sched.full_runner_history_len,
         })
     }
 }

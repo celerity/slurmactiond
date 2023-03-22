@@ -526,6 +526,7 @@ fn test_render_index() {
                 terminated_at: SystemTime::now(),
             },
         ],
+        full_job_history_len: 9,
         runner_history: vec![
             TerminatedRunner {
                 info: RunnerInfo {
@@ -555,6 +556,7 @@ fn test_render_index() {
                 terminated_at: SystemTime::now(),
             },
         ],
+        full_runner_history_len: 12,
     };
 
     sort_snapshot(&mut state);

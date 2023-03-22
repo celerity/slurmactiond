@@ -103,3 +103,9 @@ a:hover {
     color: inherit;
     background-color: #eee;
 }
+.history-total {
+    text-align: center;
+    color: var(--bs-gray);
+    font-size: 1rem;
+    margin: 1.5rem 0;
+}
