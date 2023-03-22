@@ -1,6 +1,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use log::{debug, error, info, warn};
 use serde::Serialize;
@@ -56,6 +57,8 @@ pub struct WorkflowJobInfo {
 pub struct ActiveWorkflowJob {
     pub info: WorkflowJobInfo,
     pub state: WorkflowJobState,
+    #[serde(serialize_with = "util::time_as_iso8601")]
+    pub state_changed_at: SystemTime,
 }
 
 #[derive(Clone, Serialize)]
@@ -63,6 +66,8 @@ pub struct TerminatedWorkflowJob {
     pub info: WorkflowJobInfo,
     pub assignment: Option<AssignedRunner>,
     pub termination: WorkflowJobTermination,
+    #[serde(serialize_with = "util::time_as_iso8601")]
+    pub terminated_at: SystemTime,
 }
 
 #[derive(Clone, Serialize)]
@@ -93,12 +98,16 @@ pub struct RunnerInfo {
 pub struct ActiveRunner {
     pub info: RunnerInfo,
     pub state: RunnerState,
+    #[serde(serialize_with = "util::time_as_iso8601")]
+    pub state_changed_at: SystemTime,
 }
 
 #[derive(Clone, Serialize)]
 pub struct TerminatedRunner {
     pub info: RunnerInfo,
     pub termination: RunnerTermination,
+    #[serde(serialize_with = "util::time_as_iso8601")]
+    pub terminated_at: SystemTime,
 }
 
 struct SchedulerState {
@@ -179,6 +188,7 @@ impl Scheduler {
     }
 
     pub fn create_runner(&self, target: TargetId) -> RunnerId {
+        let state_changed_at = SystemTime::now();
         self.with_state(|sched| {
             let id = sched.next_runner_id;
             sched.next_runner_id.0 += 1;
@@ -189,6 +199,7 @@ impl Scheduler {
                     metadata: None,
                 },
                 state: RunnerState::Queued,
+                state_changed_at,
             };
             sched.active_runners.insert(id, runner);
             id
@@ -201,6 +212,7 @@ impl Scheduler {
         metadata: RunnerMetadata,
     ) -> Result<(), Error> {
         let runner_name = metadata.runner_name.clone();
+        let state_change_at = SystemTime::now();
 
         let target = self.with_state(|sched| {
             let runner = sched
@@ -220,6 +232,7 @@ impl Scheduler {
 
             runner.info.metadata = Some(metadata);
             runner.state = RunnerState::Starting;
+            runner.state_changed_at = state_change_at;
 
             Ok(runner.info.target.clone())
         })?;
@@ -229,6 +242,7 @@ impl Scheduler {
     }
 
     pub fn runner_listening(self: &Arc<Self>, runner_id: RunnerId) {
+        let state_change_at = SystemTime::now();
         self.with_state(|sched| {
             let runner = sched
                 .active_runners
@@ -236,6 +250,7 @@ impl Scheduler {
                 .expect("Unknown internal runner id");
             if let RunnerState::Starting = runner.state {
                 runner.state = RunnerState::Listening;
+                runner.state_changed_at = state_change_at;
             }
         });
     }
@@ -245,6 +260,7 @@ impl Scheduler {
         runner_id: RunnerId,
         result: anyhow::Result<bool /* exited successfully */>,
     ) {
+        let terminated_at = SystemTime::now();
         // remove runner independent of job success
         let (runner_name, runner_termination) = self.with_state(|sched| {
             let runner = (sched.active_runners)
@@ -270,6 +286,7 @@ impl Scheduler {
             sched.runner_history.push_front(TerminatedRunner {
                 info: runner.info,
                 termination,
+                terminated_at,
             });
             (runner_name, termination)
         });
@@ -364,6 +381,7 @@ impl Scheduler {
         if !targets.is_empty() {
             debug!("Matched labels {labels:?} of job {job_id} to targets {targets:?}");
 
+            let state_changed_at = SystemTime::now();
             self.with_state(|sched| {
                 // like state.try_insert(), but stable
                 match sched.active_jobs.entry(job_id) {
@@ -378,6 +396,7 @@ impl Scheduler {
                                 url: url.to_owned(),
                             },
                             state: WorkflowJobState::Pending(targets),
+                            state_changed_at,
                         });
                         Ok(())
                     }
@@ -484,15 +503,18 @@ impl Scheduler {
             TrackedJobNotInProgress,
         }
 
+        let terminated_at = SystemTime::now();
         let transition = self.with_state(|sched| {
             let terminated_job = match sched.active_jobs.remove(&job_id) {
                 Some(ActiveWorkflowJob {
                     info,
                     state: WorkflowJobState::InProgress(assignment),
+                    ..
                 }) => TerminatedWorkflowJob {
                     info,
                     assignment: Some(assignment),
                     termination,
+                    terminated_at,
                 },
                 Some(_) => return Transition::TrackedJobNotInProgress,
                 // It's acceptable for job_id to be unknown in case it's from a foreign job

@@ -88,7 +88,7 @@ a:hover {
 .node .head .name {
     font-weight: 500;
 }
-.internal-id {
+.internal-id, .time {
     font-size: .8rem;
     color: var(--bs-gray);
 }

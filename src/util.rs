@@ -1,3 +1,4 @@
+use chrono;
 use log::{debug, info, warn};
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
@@ -5,7 +6,7 @@ use std::future::Future;
 use std::hash::Hash;
 use std::io;
 use std::process::{ExitStatus, Output, Stdio};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use thiserror::Error;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader, Lines};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
@@ -211,6 +212,15 @@ where
         None | Some("") => Ok(None),
         Some(s) => T::deserialize(s.into_deserializer()).map(Some),
     }
+}
+
+pub fn time_as_iso8601<S>(time: &SystemTime, ser: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use chrono::prelude::*;
+    let utc = DateTime::<Utc>::from(*time);
+    ser.serialize_str(&utc.to_rfc3339_opts(SecondsFormat::Secs, true))
 }
 
 // Concurrently map a function FnMut(I) -> Result<IntoIterator<T>, E> over an an IntoIterator<I>

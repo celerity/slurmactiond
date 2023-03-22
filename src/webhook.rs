@@ -356,6 +356,7 @@ fn test_render_index() {
         TerminatedWorkflowJob, WorkflowJobInfo, WorkflowJobState, WorkflowJobTermination,
     };
     use crate::slurm;
+    use std::time::SystemTime;
 
     let mut tera = Tera::default();
     tera.add_raw_template("index", include_str!("../res/html/index.html"))
@@ -370,6 +371,7 @@ fn test_render_index() {
                     url: "https://github.com/octo-org/example-workflow/runs/0".to_owned(),
                 },
                 state: WorkflowJobState::Pending(vec![TargetId("label-1".to_owned())]),
+                state_changed_at: SystemTime::now(),
             },
             ActiveWorkflowJob {
                 info: WorkflowJobInfo {
@@ -381,6 +383,7 @@ fn test_render_index() {
                     TargetId("label-1".to_owned()),
                     TargetId("label-2".to_owned()),
                 ]),
+                state_changed_at: SystemTime::now(),
             },
             ActiveWorkflowJob {
                 info: WorkflowJobInfo {
@@ -389,6 +392,7 @@ fn test_render_index() {
                     url: "https://github.com/octo-org/example-workflow/runs/2".to_owned(),
                 },
                 state: WorkflowJobState::InProgress(AssignedRunner::Foreign("foreign".to_owned())),
+                state_changed_at: SystemTime::now(),
             },
             ActiveWorkflowJob {
                 info: WorkflowJobInfo {
@@ -399,6 +403,7 @@ fn test_render_index() {
                 state: WorkflowJobState::InProgress(AssignedRunner::Scheduled(
                     scheduler::RunnerId(0),
                 )),
+                state_changed_at: SystemTime::now(),
             },
             ActiveWorkflowJob {
                 info: WorkflowJobInfo {
@@ -409,6 +414,7 @@ fn test_render_index() {
                 state: WorkflowJobState::InProgress(AssignedRunner::Scheduled(
                     scheduler::RunnerId(9),
                 )),
+                state_changed_at: SystemTime::now(),
             },
         ],
         active_runners: vec![
@@ -424,6 +430,7 @@ fn test_render_index() {
                     }),
                 },
                 state: RunnerState::Running(WorkflowJobId(789)),
+                state_changed_at: SystemTime::now(),
             },
             ActiveRunner {
                 info: RunnerInfo {
@@ -432,6 +439,7 @@ fn test_render_index() {
                     metadata: None,
                 },
                 state: RunnerState::Queued,
+                state_changed_at: SystemTime::now(),
             },
             ActiveRunner {
                 info: RunnerInfo {
@@ -445,6 +453,7 @@ fn test_render_index() {
                     }),
                 },
                 state: RunnerState::Starting,
+                state_changed_at: SystemTime::now(),
             },
             ActiveRunner {
                 info: RunnerInfo {
@@ -458,6 +467,7 @@ fn test_render_index() {
                     }),
                 },
                 state: RunnerState::Listening,
+                state_changed_at: SystemTime::now(),
             },
             ActiveRunner {
                 info: RunnerInfo {
@@ -471,6 +481,7 @@ fn test_render_index() {
                     }),
                 },
                 state: RunnerState::Running(WorkflowJobId(2222)),
+                state_changed_at: SystemTime::now(),
             },
         ],
         job_history: vec![
@@ -482,6 +493,7 @@ fn test_render_index() {
                 },
                 assignment: None,
                 termination: WorkflowJobTermination::TimedOut,
+                terminated_at: SystemTime::now(),
             },
             TerminatedWorkflowJob {
                 info: WorkflowJobInfo {
@@ -491,6 +503,7 @@ fn test_render_index() {
                 },
                 assignment: Some(AssignedRunner::Scheduled(RunnerId(775))),
                 termination: WorkflowJobTermination::Cancelled,
+                terminated_at: SystemTime::now(),
             },
             TerminatedWorkflowJob {
                 info: WorkflowJobInfo {
@@ -500,6 +513,7 @@ fn test_render_index() {
                 },
                 assignment: Some(AssignedRunner::Scheduled(RunnerId(776))),
                 termination: WorkflowJobTermination::CompletedWithSuccess,
+                terminated_at: SystemTime::now(),
             },
             TerminatedWorkflowJob {
                 info: WorkflowJobInfo {
@@ -509,6 +523,7 @@ fn test_render_index() {
                 },
                 assignment: Some(AssignedRunner::Scheduled(RunnerId(777))),
                 termination: WorkflowJobTermination::CompletedWithFailure,
+                terminated_at: SystemTime::now(),
             },
         ],
         runner_history: vec![
@@ -519,6 +534,7 @@ fn test_render_index() {
                     metadata: None,
                 },
                 termination: RunnerTermination::Completed(WorkflowJobId(999999)),
+                terminated_at: SystemTime::now(),
             },
             TerminatedRunner {
                 info: RunnerInfo {
@@ -527,6 +543,7 @@ fn test_render_index() {
                     metadata: None,
                 },
                 termination: RunnerTermination::Failed,
+                terminated_at: SystemTime::now(),
             },
             TerminatedRunner {
                 info: RunnerInfo {
@@ -535,6 +552,7 @@ fn test_render_index() {
                     metadata: None,
                 },
                 termination: RunnerTermination::Failed,
+                terminated_at: SystemTime::now(),
             },
         ],
     };

@@ -29,6 +29,7 @@ thiserror = "1.0" # derive(Error) for inspectable errors
 anyhow = "1.0" # type-erased errors
 nix = "0.25" # gethostname, getuid, kill, isatty (for detecting interactive vs service)
 tera = { version = "1", default-features = false } # HTML template rendering
+chrono = "0.4" # convert state change times to ISO 8601
 
 [dev-dependencies]
 tempfile = "3" # for testing file_io
