@@ -64,6 +64,19 @@ a:hover {
 .node.runner-running::before {
     background-image: url("icons/runner-running.svg");
 }
+.node.runner-completed::before {
+    background-image: url("icons/runner-completed.svg");
+}
+.node.job-failed::before {
+    background-image: url("icons/job-failed.svg");
+}
+.node.job-success::before {
+    background-image: url("icons/job-success.svg");
+}
+.node.error::before {
+    background-image: url("icons/error.svg");
+    fill: #dcca00;
+}
 .node:target {
     background: rgb(244, 251, 255);
     border-color: rgb(125, 173, 199);

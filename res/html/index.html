@@ -78,9 +78,16 @@
 <div class="row">
     <div class="col-12 col-md-6">
         {%- if job_history %}
-        <h3>Workflow Job History</h3>
+        <h2>Workflow Job History</h2>
         {%- for job in job_history %}
-        <div class="node " id="job-{{ job.info.id }}">
+        {%- if job.termination == "completed_with_success" %}
+        {%- set job_class = "job-success" %}
+        {%- elif job.termination == "completed_with_failure" %}
+        {%- set job_class = "job-failed" %}
+        {%- else %}
+        {%- set job_class = "error" %}
+        {%- endif %}
+        <div class="node {{ job_class }}" id="job-{{ job.info.id }}">
             <span class="head">
                 <a href="{{ job.info.url }}" class="name job-name">{{ job.info.name }}</a>
                 <span class="internal-id" title="GitHub workflow job ID">(#{{ job.info.id }})</span>
@@ -112,9 +119,14 @@
     </div>
     <div class="col-12 col-md-6">
         {%- if runner_history %}
-        <h3>Runner History</h3>
+        <h2>Runner History</h2>
         {%- for runner in runner_history %}
-        <div class="node" id="runner-{{ runner.info.id }}">
+        {%- if runner.termination.completed is defined %}
+        {%- set runner_class = "runner-completed" %}
+        {%- else %}
+        {%- set runner_class = "error" %}
+        {%- endif %}
+        <div class="node {{ runner_class }}" id="runner-{{ runner.info.id }}">
             <span class="head">
                 <span class="name runner-name">{% if runner.info.metadata %}{{ runner.info.metadata.runner_name }}{% else %}unnamed {{ runner.info.target }}{% endif %}</span>
                 <span class="internal-id">(<span title="slurmactiond-internal runner ID">#{{ runner.info.id }}</span>, {{ runner.info.target }}{% if runner.info.metadata %} on {{ runner.info.metadata.host_name }}{% endif %})</span>
