@@ -79,7 +79,7 @@
 {%- if job_history or runner_history %}
 <div class="row">
     <div id="job-history" class="col-12 col-md-6">
-        {%- if job_history %}
+        {%- if full_job_history_len > 0 %}
         <h3>Workflow Job History</h3>
         {%- for job in job_history %}
         {%- if job.termination == "completed_with_success" %}
@@ -118,6 +118,8 @@
             <span class="time" data-when="{{ job.terminated_at }}"></span>
         </div>
         {%- endfor %}
+        {%- endif %}
+        {%- if full_job_history_len > 1 %}
         <div class="history-total">{{ full_job_history_len }} finished jobs total since startup</div>
         {%- endif %}
     </div>
@@ -145,6 +147,8 @@
             <span class="time" data-when="{{ runner.terminated_at }}"></span>
         </div>
         {%- endfor %}
+        {%- endif %}
+        {%- if full_runner_history_len > 1 %}
         <div class="history-total">{{ full_runner_history_len }} finished runners total since startup</div>
         {%- endif %}
     </div>
