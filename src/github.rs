@@ -210,6 +210,7 @@ pub struct WorkflowJob {
     #[serde(deserialize_with = "util::empty_string_as_none")]
     pub runner_name: Option<String>,
     pub status: WorkflowStatus,
+    pub conclusion: Option<WorkflowConclusion>,
 }
 
 #[derive(Deserialize)]

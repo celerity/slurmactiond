@@ -63,7 +63,6 @@ fn internal_server_error(e: impl Display) -> InternalServerError {
 #[derive(Deserialize, Debug, PartialEq, Eq)]
 struct WorkflowJobPayload {
     action: WorkflowStatus,
-    conclusion: Option<WorkflowConclusion>,
     workflow_job: WorkflowJob,
 }
 
@@ -73,7 +72,6 @@ async fn workflow_job_event(
 ) -> StaticResult {
     let WorkflowJobPayload {
         action,
-        conclusion,
         workflow_job:
             WorkflowJob {
                 run_id,
@@ -82,6 +80,7 @@ async fn workflow_job_event(
                 name: workflow_name,
                 labels: job_labels,
                 runner_name,
+                conclusion,
                 ..
             },
     } = payload;
