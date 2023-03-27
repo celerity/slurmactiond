@@ -86,6 +86,8 @@
         {%- set job_class = "job-success" %}
         {%- elif job.termination == "completed_with_failure" %}
         {%- set job_class = "job-failed" %}
+        {%- elif job.termination == "cancelled" %}
+        {%- set job_class = "cancelled" %}
         {%- else %}
         {%- set job_class = "error" %}
         {%- endif %}

@@ -73,9 +73,11 @@ a:hover {
 .node.job-success::before {
     background-image: url("icons/job-success.svg");
 }
+.node.cancelled::before {
+    background-image: url("icons/cancelled.svg");
+}
 .node.error::before {
     background-image: url("icons/error.svg");
-    fill: #dcca00;
 }
 .node:target {
     background: rgb(244, 251, 255);
