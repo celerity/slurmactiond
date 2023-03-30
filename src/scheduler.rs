@@ -42,6 +42,7 @@ pub enum WorkflowJobTermination {
     CompletedWithSuccess,
     CompletedWithFailure,
     Cancelled,
+    Skipped,
     Failed,
     TimedOut,
 }
@@ -272,9 +273,11 @@ impl Scheduler {
             let runner = (sched.active_runners)
                 .remove(&runner_id)
                 .expect("Runner id vanished");
-            if let Some(metadata) = &runner.info.metadata {
+
+            let runner_name = runner.info.metadata.as_ref().map(|m| m.runner_name.clone());
+            if let Some(runner_name) = &runner_name {
                 (sched.active_rids_by_name)
-                    .remove(&metadata.runner_name)
+                    .remove(runner_name)
                     .expect("Runner name vanished");
             }
 
@@ -293,7 +296,6 @@ impl Scheduler {
             });
             sched.full_runner_history_len += 1;
 
-            let runner_name = runner.info.metadata.as_ref().map(|m| m.runner_name.clone());
             (runner_name, termination)
         });
 

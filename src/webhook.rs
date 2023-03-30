@@ -103,6 +103,11 @@ async fn workflow_job_event(
                 WorkflowJobConclusion::Success => WorkflowJobTermination::CompletedWithSuccess,
                 WorkflowJobConclusion::Failure => WorkflowJobTermination::CompletedWithFailure,
                 WorkflowJobConclusion::Cancelled => WorkflowJobTermination::Cancelled,
+                WorkflowJobConclusion::ActionRequired => return Ok(NO_CONTENT),
+                WorkflowJobConclusion::Neutral => WorkflowJobTermination::CompletedWithSuccess,
+                WorkflowJobConclusion::Skipped => WorkflowJobTermination::Skipped,
+                WorkflowJobConclusion::Stale => WorkflowJobTermination::Cancelled,
+                WorkflowJobConclusion::TimedOut => WorkflowJobTermination::TimedOut,
             };
             scheduler.job_terminated(*job_id, termination)
         }

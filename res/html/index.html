@@ -86,7 +86,7 @@
         {%- set job_class = "job-success" %}
         {%- elif job.termination == "completed_with_failure" %}
         {%- set job_class = "job-failed" %}
-        {%- elif job.termination == "cancelled" %}
+        {%- elif job.termination == "cancelled" or job.termination == "skipped" %}
         {%- set job_class = "cancelled" %}
         {%- else %}
         {%- set job_class = "error" %}
@@ -103,6 +103,8 @@
             failed
             {%- elif job.termination == "cancelled" %}
             cancelled
+            {%- elif job.termination == "skipped" %}
+            skipped
             {%- elif job.termination == "failed" %}
             failed to start
             {%- elif job.termination == "timed_out" %}
