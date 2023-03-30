@@ -272,14 +272,11 @@ impl Scheduler {
             let runner = (sched.active_runners)
                 .remove(&runner_id)
                 .expect("Runner id vanished");
-            let runner_name = (runner.info.metadata)
-                .as_ref()
-                .expect("Runner had no metadata")
-                .runner_name
-                .clone();
-            (sched.active_rids_by_name)
-                .remove(&runner_name)
-                .expect("Runner name vanished");
+            if let Some(metadata) = &runner.info.metadata {
+                (sched.active_rids_by_name)
+                    .remove(&metadata.runner_name)
+                    .expect("Runner name vanished");
+            }
 
             if sched.runner_history.len() >= self.history_len {
                 sched.runner_history.pop_back();
@@ -295,16 +292,22 @@ impl Scheduler {
                 terminated_at,
             });
             sched.full_runner_history_len += 1;
+
+            let runner_name = runner.info.metadata.as_ref().map(|m| m.runner_name.clone());
             (runner_name, termination)
         });
 
+        let runner_log_ref = match runner_name {
+            Some(runner_name) => format!("Runner {runner_id} ({runner_name})"),
+            None => format!("Runner {runner_id}"),
+        };
         match runner_termination {
             RunnerTermination::Completed(job) => {
-                info!("Runner {runner_id} ({runner_name}) completed job {job}")
+                info!("{runner_log_ref} completed job {job}")
             }
             RunnerTermination::ListeningTimeout => {
                 warn!(
-                    "Runner {runner_id} ({runner_name}) timed out waiting for a job. {}",
+                    "{runner_log_ref} timed out waiting for a job. {}",
                     "This might be due to a a foreign runner picking up our jobs."
                 );
                 self.schedule().unwrap_or_else(|e| error!("{e:#}"));
@@ -314,7 +317,7 @@ impl Scheduler {
                     Ok(status) => format!("(prematurely) exited with status {status}"),
                     Err(e) => format!("{e:#}"),
                 };
-                error!("Runner {runner_id} ({runner_name}) failed: {message}");
+                error!("{runner_log_ref} failed: {message}");
                 self.schedule().unwrap_or_else(|e| error!("{e:#}"));
             }
         }
