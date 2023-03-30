@@ -194,9 +194,14 @@ pub enum WorkflowStatus {
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowJobConclusion {
-    Success,
-    Failure,
+    ActionRequired,
     Cancelled,
+    Failure,
+    Neutral,
+    Skipped,
+    Stale,
+    Success,
+    TimedOut,
 }
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
